@@ -5465,17 +5465,17 @@
 
   .memoria-card {
     margin-bottom: 10px;
-    padding: 12px 14px 14px;
+    padding: 8px 14px 12px;
   }
 
   .memoria-card-head {
-    min-height: 24px;
-    margin-bottom: 8px;
+    min-height: 22px;
+    margin-bottom: 2px;
   }
 
   .memoria-card-time-wrap,
   .memoria-card-actions {
-    min-height: 24px;
+    min-height: 22px;
   }
 
   .memoria-card-time {
@@ -5492,7 +5492,7 @@
   .memoria-card-body > ul:first-child,
   .memoria-card-body > ol:first-child,
   .memoria-card-body > blockquote:first-child {
-    margin-top: 0;
+    margin-top: 0 !important;
   }
 
   .memoria-card-body p {
@@ -5500,7 +5500,7 @@
   }
 
   .memoria-card-body ul.contains-task-list {
-    margin: 0.3em 0;
+    margin: 0 !important;
     padding-left: 0 !important;
     list-style: none;
   }
@@ -5512,6 +5512,10 @@
     min-width: 0;
     margin: 0.25em 0;
     padding-left: 0 !important;
+  }
+
+  .memoria-card-body ul.contains-task-list > li:first-child {
+    margin-top: 0;
   }
 
   .memoria-card-body
