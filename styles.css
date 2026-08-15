@@ -5153,36 +5153,44 @@
  * ================================================================ */
 .view-header.memoria-mobile-header-enabled {
   position: relative;
-  /* Obsidian 的移动端 view-header 在某些版本会继承很大的 flex 高度；
-   * 明确锁定为原生 header 高度，避免工具栏下面出现整屏空白。 */
-  flex: 0 0 var(--header-height, 44px) !important;
-  height: var(--header-height, 44px) !important;
-  min-height: var(--header-height, 44px) !important;
-  max-height: var(--header-height, 44px) !important;
-  overflow: visible;
+  /* 不使用 --header-height：部分移动端主题会把它定义成内容区高度，
+   * 这会让原生 header 在工具栏下面留下整块空白。 */
+  flex: 0 0 52px !important;
+  height: 52px !important;
+  min-height: 52px !important;
+  max-height: 52px !important;
+  block-size: 52px !important;
+  min-block-size: 52px !important;
+  max-block-size: 52px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  overflow: visible !important;
+  box-sizing: border-box !important;
   z-index: 6;
 }
 
 /* 原生标题由插件 topbar 中的品牌标题取代，避免出现两个 Memoria。 */
 .view-header.memoria-mobile-header-enabled .view-header-title {
-  visibility: hidden;
+  display: none !important;
 }
 
 .view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
   position: absolute;
-  inset: 0 48px;
+  /* 原生左侧面板入口比右侧更多菜单更宽，左右安全区刻意不对称。 */
+  inset: 0 64px 0 72px;
   z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   min-width: 0;
-  max-width: none;
+  max-width: 100%;
   gap: 0;
-  padding: 0 4px;
+  padding: 0 2px;
   border: none;
   background: transparent;
   pointer-events: none;
   box-sizing: border-box;
+  overflow: visible;
 }
 
 .view-header.memoria-mobile-header-enabled
@@ -5199,17 +5207,17 @@
 
 .memoria-mobile-topbar .memoria-topbar-title {
   order: -2;
-  flex: 0 1 auto;
+  flex: 0 0 24px;
+  width: 24px;
   min-width: 0;
-  gap: 4px;
-  font-size: 15px;
+  gap: 0;
+  font-size: 0;
   white-space: nowrap;
 }
 
-/* 原有窄屏规则为了节省主内容宽度隐藏了品牌文字；移动原生 header 有独立空间，
- * 这里保留它，避免只剩一枚羽毛图标。 */
+/* 移动端顶部只保留功能图标，不显示会挤压工具栏的 Memoria 文字。 */
 .memoria-mobile-topbar .memoria-brand {
-  display: inline;
+  display: none !important;
 }
 
 .memoria-mobile-topbar .memoria-logo .svg-icon {
@@ -5223,6 +5231,8 @@
   width: 30px;
   min-width: 30px;
   height: 30px;
+  display: flex;
+  align-items: center;
   margin-left: 0;
   padding: 0;
   gap: 0;
@@ -5244,8 +5254,10 @@
 }
 
 .memoria-mobile-topbar .memoria-search-icon:hover,
-.memoria-mobile-topbar .memoria-search-icon:focus-visible {
-  background: var(--background-modifier-hover);
+.memoria-mobile-topbar .memoria-search-icon:focus-visible,
+.memoria-mobile-topbar .memoria-search-icon:active {
+  /* 移动端触摸会把 hover 状态粘住，搜索展开后会留下突兀的灰色方块。 */
+  background: transparent !important;
   color: var(--interactive-accent);
   outline: none;
 }
@@ -5302,8 +5314,10 @@
 .view-header.memoria-mobile-header-enabled
   button.memoria-icon-btn:hover,
 .view-header.memoria-mobile-header-enabled
-  button.memoria-icon-btn:focus-visible {
-  background: var(--background-modifier-hover) !important;
+  button.memoria-icon-btn:focus-visible,
+.view-header.memoria-mobile-header-enabled
+  button.memoria-icon-btn:active {
+  background: transparent !important;
   color: var(--interactive-accent);
 }
 
@@ -5332,7 +5346,8 @@
   width: auto;
   min-width: 0;
   height: 30px;
-  padding: 0 8px;
+  margin: 0 2px;
+  padding: 0 4px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--memoria-radius-pill);
   background: var(--background-modifier-form-field);
@@ -5342,9 +5357,9 @@
 
 .memoria-mobile-topbar.memoria-mobile-search-open .memoria-search {
   flex: 1 1 auto;
-  width: auto;
-  min-width: 0;
-  max-width: none;
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: none !important;
   height: 100%;
   padding: 5px 4px;
   opacity: 1;
@@ -5369,6 +5384,11 @@
   box-shadow: none !important;
   -webkit-appearance: none;
   appearance: none;
+  flex: 1 1 auto;
+  width: 0 !important;
+  max-width: none !important;
+  font: inherit;
+  color: var(--text-normal);
 }
 
 /* 原生左右入口始终在插件工具层之上；插件层仍保留左右安全区，正常情况下
@@ -5379,15 +5399,22 @@
   z-index: 3;
 }
 
+/* view-header 是 view-content 的同级元素；有些移动主题会把自己的 padding
+ * 重新加回 view-content，造成 header 和第一张卡片之间再次出现空白。 */
+.workspace-leaf-content[data-type="memoria-view"] > .view-content {
+  padding-top: 0 !important;
+  margin-top: 0 !important;
+}
+
 /* 超窄设备上优先保留按钮的可点击面积；品牌文字让出一点空间。 */
 @media (max-width: 380px) {
   .view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
-    inset-inline: 42px;
+    inset: 0 52px 0 56px;
     padding-inline: 2px;
   }
 
   .memoria-mobile-topbar .memoria-brand {
-    font-size: 13px;
+    display: none !important;
   }
 
   .memoria-mobile-topbar .memoria-icon-btn,
