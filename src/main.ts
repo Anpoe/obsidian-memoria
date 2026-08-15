@@ -11,6 +11,10 @@ import {
 import {
   DEFAULT_SETTINGS,
   MemoriaSettings,
+  normalizePinnedSearch,
+  normalizeSavedSearches,
+  normalizeSidebarSectionCollapsed,
+  normalizeSidebarSectionOrder,
   VIEW_TYPE_MEMORIA,
   VIEW_TYPE_MEMORIA_STATS,
   VIEW_TYPE_MEMORIA_YEAR,
@@ -155,6 +159,20 @@ export default class MemoriaPlugin extends Plugin {
         ? (loaded as Partial<MemoriaSettings>)
         : {};
     this.settings = { ...DEFAULT_SETTINGS, ...persisted };
+    // 新增设置需要对旧版本 data.json 和手动编辑后的异常值做一次修复，
+    // 避免侧栏排序/折叠状态把视图渲染成空白。
+    this.settings.sidebarSectionOrder = normalizeSidebarSectionOrder(
+      this.settings.sidebarSectionOrder
+    );
+    this.settings.sidebarSectionCollapsed = normalizeSidebarSectionCollapsed(
+      this.settings.sidebarSectionCollapsed
+    );
+    this.settings.savedSearches = normalizeSavedSearches(
+      this.settings.savedSearches
+    );
+    this.settings.pinnedSearch = normalizePinnedSearch(
+      this.settings.pinnedSearch
+    );
   }
 
   async saveSettings(): Promise<void> {

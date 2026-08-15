@@ -1,5 +1,214 @@
 // ================= 类型定义 =================
 
+/** 侧栏分组。overview 包含统计、热力图/日历和每日目标。 */
+export type SidebarSectionId =
+  | "overview"
+  | "views"
+  | "search"
+  | "years"
+  | "tags";
+
+export const SIDEBAR_SECTION_IDS: readonly SidebarSectionId[] = [
+  "overview",
+  "views",
+  "search",
+  "years",
+  "tags",
+];
+
+/** 概览恢复为固定区块；只有下面四个分组参与拖拽排序。 */
+export const SIDEBAR_SORTABLE_SECTION_IDS: readonly SidebarSectionId[] = [
+  "views",
+  "search",
+  "years",
+  "tags",
+];
+
+export const DEFAULT_SIDEBAR_SECTION_ORDER: SidebarSectionId[] = [
+  ...SIDEBAR_SORTABLE_SECTION_IDS,
+];
+
+export const DEFAULT_SIDEBAR_SECTION_COLLAPSED: Record<
+  SidebarSectionId,
+  boolean
+> = {
+  overview: false,
+  views: false,
+  search: false,
+  years: false,
+  // Keep the old tag-tree behavior: the tag group starts collapsed.
+  tags: true,
+};
+
+/** 兼容旧版本或手动编辑 data.json 后的异常值。 */
+export function normalizeSidebarSectionOrder(value: unknown): SidebarSectionId[] {
+  const allowed = new Set<string>(SIDEBAR_SORTABLE_SECTION_IDS);
+  const result: SidebarSectionId[] = [];
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === "string" && allowed.has(item)) {
+        const id = item as SidebarSectionId;
+        if (!result.includes(id)) result.push(id);
+      }
+    }
+  }
+  for (const id of SIDEBAR_SORTABLE_SECTION_IDS) {
+    if (!result.includes(id)) result.push(id);
+  }
+  return result;
+}
+
+export function normalizeSidebarSectionCollapsed(
+  value: unknown
+): Record<SidebarSectionId, boolean> {
+  const raw =
+    typeof value === "object" && value !== null
+      ? (value as Record<string, unknown>)
+      : {};
+  const result = { ...DEFAULT_SIDEBAR_SECTION_COLLAPSED };
+  for (const id of SIDEBAR_SECTION_IDS) {
+    if (typeof raw[id] === "boolean") result[id] = raw[id];
+  }
+  return result;
+}
+
+/** 用户保存的自定义检索式。query 使用搜索框支持的高级语法。 */
+export type SavedSearchFilterField =
+  | "tag"
+  | "text"
+  | "date"
+  | "type"
+  | "status"
+  | "source"
+  | "path"
+  | "metadata";
+
+export type SavedSearchFilterOperator =
+  | "include"
+  | "exclude"
+  | "equals"
+  | "after"
+  | "before";
+
+export interface SavedSearchFilter {
+  field: SavedSearchFilterField;
+  operator: SavedSearchFilterOperator;
+  value: string;
+}
+
+const SAVED_SEARCH_FILTER_FIELDS: readonly SavedSearchFilterField[] = [
+  "tag",
+  "text",
+  "date",
+  "type",
+  "status",
+  "source",
+  "path",
+  "metadata",
+];
+
+const SAVED_SEARCH_FILTER_OPERATORS: readonly SavedSearchFilterOperator[] = [
+  "include",
+  "exclude",
+  "equals",
+  "after",
+  "before",
+];
+
+export function normalizeSavedSearchFilters(
+  value: unknown
+): SavedSearchFilter[] {
+  if (!Array.isArray(value)) return [];
+  const result: SavedSearchFilter[] = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) continue;
+    const raw = item as Record<string, unknown>;
+    const field = SAVED_SEARCH_FILTER_FIELDS.includes(
+      raw.field as SavedSearchFilterField
+    )
+      ? (raw.field as SavedSearchFilterField)
+      : null;
+    const operator = SAVED_SEARCH_FILTER_OPERATORS.includes(
+      raw.operator as SavedSearchFilterOperator
+    )
+      ? (raw.operator as SavedSearchFilterOperator)
+      : null;
+    const filterValue =
+      typeof raw.value === "string" ? raw.value.trim() : "";
+    if (!field || !operator || !filterValue) continue;
+    result.push({ field, operator, value: filterValue });
+  }
+  return result;
+}
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: string;
+  /** 新版交互式检索器生成的结构化条件；没有时兼容旧版 query。 */
+  filters?: SavedSearchFilter[];
+}
+
+/** 侧栏中被固定、下次打开视图时自动应用的检索式。 */
+export interface PinnedSearch {
+  /** preset 保存内置入口，query 保存搜索框检索式。 */
+  type: "preset" | "query";
+  /** preset key，或原始检索式文本。 */
+  value: string;
+  /** 固定时显示的名称，用于设置损坏/语言切换时的兜底。 */
+  name: string;
+  /** 自定义检索式的 id；内置入口没有此字段。 */
+  savedId?: string;
+}
+
+/** 兼容旧版本或手动编辑 data.json 后的异常值。 */
+export function normalizeSavedSearches(value: unknown): SavedSearch[] {
+  if (!Array.isArray(value)) return [];
+  const result: SavedSearch[] = [];
+  const ids = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) continue;
+    const raw = item as Record<string, unknown>;
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    const name = typeof raw.name === "string" ? raw.name.trim() : "";
+    const query = typeof raw.query === "string" ? raw.query.trim() : "";
+    const filters = normalizeSavedSearchFilters(raw.filters);
+    if (!id || !name || (!query && filters.length === 0) || ids.has(id)) {
+      continue;
+    }
+    ids.add(id);
+    result.push({
+      id,
+      name,
+      query,
+      ...(filters.length ? { filters } : {}),
+    });
+  }
+  return result;
+}
+
+export function normalizePinnedSearch(value: unknown): PinnedSearch | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const type = raw.type === "preset" || raw.type === "query" ? raw.type : null;
+  const valueText = typeof raw.value === "string" ? raw.value.trim() : "";
+  const name = typeof raw.name === "string" ? raw.name.trim() : "";
+  const savedId = typeof raw.savedId === "string" ? raw.savedId.trim() : "";
+  if (!type || (!valueText && !(type === "query" && savedId))) return null;
+  if (
+    type === "preset" &&
+    !["no-tag", "with-image", "with-link"].includes(valueText)
+  ) {
+    return null;
+  }
+  return {
+    type,
+    value: valueText,
+    name: name || valueText,
+    ...(savedId ? { savedId } : {}),
+  };
+}
+
 /** 单条 memo 记录 */
 export interface Memo {
   /** 所在文件路径，如 "Memoria/2026.md" */
@@ -45,6 +254,14 @@ export interface MemoriaSettings {
    *   笔记跨度长（8 年甚至更多）的用户，右侧年份列表会很长造成视觉干扰，
    *   关闭后可隐藏。默认 true（沿用老行为，不影响现有用户） */
   showSidebarYears: boolean;
+  /** 侧栏分组的显示顺序，用户拖拽后持久化。 */
+  sidebarSectionOrder: SidebarSectionId[];
+  /** 侧栏分组的折叠状态，用户点击后持久化。 */
+  sidebarSectionCollapsed: Record<SidebarSectionId, boolean>;
+  /** 用户创建的自定义检索式。 */
+  savedSearches: SavedSearch[];
+  /** 当前被固定的检索式；重开 Memoria 时会自动应用。 */
+  pinnedSearch: PinnedSearch | null;
   /** v1.1.9: 删除笔记时保留到 _trash.md（关掉就是硬删除） */
   useTrash: boolean;
   /** v1.2.3: 导出图片的背景主题。
@@ -115,6 +332,10 @@ export const DEFAULT_SETTINGS: MemoriaSettings = {
   pageSize: 50,
   showSidebarTags: false,
   showSidebarYears: true,
+  sidebarSectionOrder: [...DEFAULT_SIDEBAR_SECTION_ORDER],
+  sidebarSectionCollapsed: { ...DEFAULT_SIDEBAR_SECTION_COLLAPSED },
+  savedSearches: [],
+  pinnedSearch: null,
   useTrash: true,
   exportTheme: "auto",
   collapseLineLimit: 8,

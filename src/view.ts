@@ -12,7 +12,22 @@ import {
   Platform,
   debounce,
 } from "obsidian";
-import { Memo, MemoriaSettings, RESERVED_TAGS, VIEW_TYPE_MEMORIA, VIEW_TYPE_MEMORIA_STATS, VIEW_TYPE_MEMORIA_YEAR } from "./types";
+import {
+  Memo,
+  MemoriaSettings,
+  PinnedSearch,
+  normalizeSidebarSectionCollapsed,
+  normalizeSidebarSectionOrder,
+  RESERVED_TAGS,
+  SavedSearch,
+  SavedSearchFilter,
+  SavedSearchFilterField,
+  SavedSearchFilterOperator,
+  SidebarSectionId,
+  VIEW_TYPE_MEMORIA,
+  VIEW_TYPE_MEMORIA_STATS,
+  VIEW_TYPE_MEMORIA_YEAR,
+} from "./types";
 import { MemoStore } from "./store";
 import { TagSuggest } from "./tag-suggest";
 import { extractImages, renderImageGrid, openLightbox } from "./image-grid";
@@ -63,6 +78,24 @@ interface ReviewFilters {
   keyword: string;
 }
 
+interface SidebarSearchItem {
+  id: string;
+  type: "preset" | "query";
+  /** preset key，或自定义检索式原文。 */
+  value: string;
+  text: string;
+  icon: string;
+  count: number;
+  savedId?: string;
+  filters?: SavedSearchFilter[];
+}
+
+interface SearchBuilderCondition {
+  field: SavedSearchFilterField | "";
+  operator: SavedSearchFilterOperator;
+  value: string;
+}
+
 export class MemoriaView extends ItemView {
   private workspaceLeafEl: HTMLElement | null = null;
   private filter: Filter = {
@@ -84,11 +117,14 @@ export class MemoriaView extends ItemView {
   private imagePickerEl: HTMLInputElement | null = null;
   private listEl!: HTMLElement;
   private sidebarEl!: HTMLElement;
+  private sidebarDragSection: SidebarSectionId | null = null;
   private searchEl!: HTMLInputElement;
+  /** 当前交互式自定义检索式；与搜索框的原始 query 并存，兼容旧版检索式。 */
+  private activeSavedSearchId: string | null = null;
+  private activeSavedSearchFilters: SavedSearchFilter[] | null = null;
   private childComponent = new Component();
   /** v1.1.14: 改为按 settings.pageSize 初始化，不再硬编码 50 */
   private pageLimit: number;
-  private tagsExpanded = false;
   private tagSuggest: TagSuggest | null = null;
   /** 侧栏顶部视图：热力图 / 月历 / 宠物（v2.1.0 新增 buddy）
    *  v2.0.20: 初始值从 settings.defaultOverviewMode 读（老用户默认 heatmap 不变）
@@ -183,6 +219,7 @@ export class MemoriaView extends ItemView {
     this.workspaceLeafEl?.addClass("memoria-workspace-leaf");
     this.contentEl.addClass("memoria-root");
     this.buildLayout();
+    this.applyPinnedSearch();
     this.unsubscribe = this.store.onChange(() => this.renderAll());
 
     // v2.0.14: Obsidian 内置命令「在新标签页中打开光标处链接」默认占用 Ctrl+Enter。
@@ -274,8 +311,10 @@ export class MemoriaView extends ItemView {
     //   debounce 到用户停顿 180ms 再触发，既不影响手感也避免中间态刷 N 次
     const doSearch = debounce(() => {
       this.filter.keyword = this.searchEl.value.trim();
+      this.activeSavedSearchId = null;
+      this.activeSavedSearchFilters = null;
       this.pageLimit = this.getInitialPageLimit();
-      this.renderList();
+      this.renderAll();
     }, 180);
     this.searchEl.addEventListener("input", doSearch);
     // v1.1.19: 删除"刷新"按钮 —— 文件变化监听（vault.on modify/create/delete/rename）
@@ -1919,23 +1958,20 @@ export class MemoriaView extends ItemView {
       if (effectiveTags.length === 0) noTagCount++;
     }
 
-    const stats = this.sidebarEl.createDiv({ cls: "memoria-stats" });
-    this.renderStatItem(stats, memos.length.toString(), t("stats.memos"));
-    this.renderStatItem(stats, tagSet.size.toString(), t("stats.tags"));
-    this.renderStatItem(stats, daySet.size.toString(), t("stats.days"));
-    // v1.4.1: 视图切换按钮移到进度条右侧，此处不再创建
+    const yearCount = new Map<string, number>();
+    for (const m of memos) {
+      const y = m.date.substring(0, 4);
+      yearCount.set(y, (yearCount.get(y) ?? 0) + 1);
+    }
 
-    // 热力图 / 月历（可切换）
-    this.renderOverview(this.sidebarEl, memos);
+    const tagCount = new Map<string, number>();
+    for (const m of memos) {
+      for (const tag of m.tags) {
+        if (RESERVED_TAGS.has(tag)) continue;
+        tagCount.set(tag, (tagCount.get(tag) ?? 0) + 1);
+      }
+    }
 
-    // v1.4.0: 每日打卡进度条（热力图/日历下方）
-    this.renderDailyGoal(this.sidebarEl, memos);
-
-    // 视图区
-    this.sidebarEl.createDiv({
-      cls: "memoria-sidebar-section",
-      text: t("sidebar.section.views"),
-    });
     const presets: Array<{
       key: Filter["preset"];
       icon: string;
@@ -1961,83 +1997,1007 @@ export class MemoriaView extends ItemView {
         count: onThisDayCount,
       },
     ];
-    for (const p of presets) {
-      this.renderNavItem(p.key, p.icon, p.text, p.count);
-    }
 
-    // 检索式
-    this.sidebarEl.createDiv({
-      cls: "memoria-sidebar-section",
-      text: t("sidebar.section.search"),
+    const renderers: Record<SidebarSectionId, () => void> = {
+      overview: () => {
+        this.renderSidebarSection(
+          "overview",
+          t("sidebar.section.overview"),
+          (content) => {
+            const stats = content.createDiv({ cls: "memoria-stats" });
+            this.renderStatItem(stats, memos.length.toString(), t("stats.memos"));
+            this.renderStatItem(stats, tagSet.size.toString(), t("stats.tags"));
+            this.renderStatItem(stats, daySet.size.toString(), t("stats.days"));
+            // v1.4.1: 视图切换按钮移到进度条右侧，此处不再创建
+
+            // 热力图 / 月历（可切换）
+            this.renderOverview(content, memos);
+
+            // v1.4.0: 每日打卡进度条（热力图/日历下方）
+            this.renderDailyGoal(content, memos);
+          }
+        );
+      },
+      views: () => {
+        this.renderSidebarSection("views", t("sidebar.section.views"), (content) => {
+          for (const p of presets) {
+            this.renderNavItem(content, p.key, p.icon, p.text, p.count);
+          }
+        });
+      },
+      search: () => {
+        this.renderSidebarSection(
+          "search",
+          t("sidebar.section.search"),
+          (content) => {
+          const searchItems: SidebarSearchItem[] = [
+            {
+              id: "preset:no-tag",
+              type: "preset",
+              value: "no-tag",
+              icon: "tag",
+              text: t("sidebar.noTag"),
+              count: noTagCount,
+            },
+            {
+              id: "preset:with-image",
+              type: "preset",
+              value: "with-image",
+              icon: "image",
+              text: t("sidebar.withImage"),
+              count: imageCount,
+            },
+            {
+              id: "preset:with-link",
+              type: "preset",
+              value: "with-link",
+              icon: "link",
+              text: t("sidebar.withLink"),
+              count: linkCount,
+            },
+          ];
+          for (const saved of this.settings.savedSearches) {
+            searchItems.push({
+              id: `saved:${saved.id}`,
+              type: "query",
+              value: saved.query,
+              icon: "search",
+              text: saved.name,
+              count: this.countSavedSearch(saved),
+              savedId: saved.id,
+              filters: saved.filters,
+            });
+          }
+          for (const item of searchItems) {
+            this.renderSearchNavItem(content, item);
+          }
+          },
+          (header) => {
+            const addButton = header.createEl("button", {
+              cls: "memoria-section-action memoria-section-add",
+              attr: {
+                "aria-label": t("sidebar.search.addTitle"),
+                title: t("sidebar.search.addTitle"),
+              },
+            });
+            setIcon(addButton, "plus");
+            addButton.addEventListener("click", (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              this.openSavedSearchModal();
+            });
+          }
+        );
+      },
+      years: () => {
+        if (!this.settings.showSidebarYears || !yearCount.size) return;
+        this.renderSidebarSection("years", t("sidebar.section.years"), (content) => {
+          const years = [...yearCount.entries()].sort((a, b) =>
+            a[0] < b[0] ? 1 : -1
+          );
+          for (const [y, c] of years) {
+            const el = content.createDiv({
+              cls:
+                "memoria-nav-item" +
+                (this.filter.year === y ? " active" : ""),
+            });
+            const icon = el.createDiv({ cls: "memoria-nav-icon" });
+            setIcon(icon, "calendar");
+            el.createSpan({ cls: "memoria-nav-text", text: y });
+            el.createSpan({ cls: "memoria-nav-count", text: String(c) });
+            el.addEventListener("click", () => {
+              this.filter.year = this.filter.year === y ? null : y;
+              this.filter.preset = "all";
+              this.pageLimit = this.getInitialPageLimit();
+              this.renderAll();
+            });
+          }
+        });
+      },
+      tags: () => {
+        if (!this.settings.showSidebarTags || !tagCount.size) return;
+        this.renderSidebarSection(
+          "tags",
+          `${t("sidebar.section.tags")} (${tagCount.size})`,
+          (content) => {
+            const tree = this.buildTagTree(tagCount);
+            this.renderTagTree(content, tree, 0);
+          }
+        );
+      },
+    };
+
+    const order = normalizeSidebarSectionOrder(this.settings.sidebarSectionOrder);
+    this.settings.sidebarSectionOrder = order;
+    this.settings.sidebarSectionCollapsed = normalizeSidebarSectionCollapsed(
+      this.settings.sidebarSectionCollapsed
+    );
+    // 概览固定在最上方，不参与排序；其余分组按照用户保存的顺序渲染。
+    renderers.overview();
+    for (const id of order) renderers[id]();
+  }
+
+  /** 渲染一个可折叠、可拖拽的侧栏分组。 */
+  private renderSidebarSection(
+    id: SidebarSectionId,
+    title: string,
+    renderContent: (content: HTMLElement) => void,
+    renderHeaderActions?: (header: HTMLElement) => void
+  ): void {
+    const group = this.sidebarEl.createDiv({
+      cls: "memoria-sidebar-group",
+      attr: { "data-section-id": id },
     });
-    this.renderNavItem("no-tag", "tag", t("sidebar.noTag"), noTagCount);
-    this.renderNavItem("with-image", "image", t("sidebar.withImage"), imageCount);
-    this.renderNavItem("with-link", "link", t("sidebar.withLink"), linkCount);
-
-    // 年份（v2.3.0: 可在设置里隐藏，跨度长的用户右侧列表太长会有视觉干扰）
-    const yearCount = new Map<string, number>();
-    for (const m of memos) {
-      const y = m.date.substring(0, 4);
-      yearCount.set(y, (yearCount.get(y) ?? 0) + 1);
-    }
-    if (this.settings.showSidebarYears && yearCount.size) {
-      this.sidebarEl.createDiv({
-        cls: "memoria-sidebar-section",
-        text: t("sidebar.section.years"),
+    const collapsed =
+      id === "overview" ? false : this.settings.sidebarSectionCollapsed[id];
+    if (id !== "overview") {
+      const header = group.createDiv({
+        cls: "memoria-sidebar-section memoria-sidebar-section-header",
       });
-      const years = [...yearCount.entries()].sort((a, b) =>
-        a[0] < b[0] ? 1 : -1
-      );
-      for (const [y, c] of years) {
-        const el = this.sidebarEl.createDiv({
-          cls:
-            "memoria-nav-item" +
-            (this.filter.year === y ? " active" : ""),
-        });
-        const icon = el.createDiv({ cls: "memoria-nav-icon" });
-        setIcon(icon, "calendar");
-        el.createSpan({ cls: "memoria-nav-text", text: y });
-        el.createSpan({ cls: "memoria-nav-count", text: String(c) });
-        el.addEventListener("click", () => {
-          this.filter.year = this.filter.year === y ? null : y;
-          this.filter.preset = "all";
-          this.pageLimit = this.getInitialPageLimit();
-          this.renderAll();
-        });
-      }
+      const toggle = header.createEl("button", {
+        cls: "memoria-section-toggle",
+        attr: {
+          "aria-expanded": String(!collapsed),
+          "aria-label": t("sidebar.section.toggle"),
+          title: t("sidebar.section.toggle"),
+        },
+      });
+      setIcon(toggle, collapsed ? "chevron-right" : "chevron-down");
+      const toggleSection = (): void => {
+        this.settings.sidebarSectionCollapsed[id] = !collapsed;
+        this.renderSidebar();
+        this.saveSidebarSettings();
+      };
+      toggle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleSection();
+      });
+
+      header.createSpan({ cls: "memoria-section-title", text: title });
+      renderHeaderActions?.(header);
+      const dragHandle = header.createSpan({
+        cls: "memoria-section-drag-handle",
+        attr: {
+          draggable: "true",
+          "aria-label": t("sidebar.section.drag"),
+          title: t("sidebar.section.drag"),
+        },
+      });
+      setIcon(dragHandle, "grip-vertical");
+      header.addEventListener("click", (event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest(".memoria-section-drag-handle")) {
+          return;
+        }
+        toggleSection();
+      });
+
+      dragHandle.addEventListener("dragstart", (event) => {
+        this.sidebarDragSection = id;
+        group.addClass("is-dragging");
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", id);
+        }
+      });
+      dragHandle.addEventListener("dragend", () => {
+        this.clearSidebarDragState();
+      });
+
+      group.addEventListener("dragover", (event) => {
+        const dragged = this.sidebarDragSection;
+        if (!dragged || dragged === id) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        const rect = group.getBoundingClientRect();
+        const before = event.clientY < rect.top + rect.height / 2;
+        group.toggleClass("is-drag-over-before", before);
+        group.toggleClass("is-drag-over-after", !before);
+      });
+      group.addEventListener("dragleave", (event) => {
+        const related = event.relatedTarget;
+        if (related instanceof Node && group.contains(related)) return;
+        group.removeClass("is-drag-over-before");
+        group.removeClass("is-drag-over-after");
+      });
+      group.addEventListener("drop", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const dragged = this.sidebarDragSection;
+        if (!dragged || dragged === id) {
+          this.clearSidebarDragState();
+          return;
+        }
+        const rect = group.getBoundingClientRect();
+        const before = event.clientY < rect.top + rect.height / 2;
+        this.moveSidebarSection(dragged, id, before);
+      });
     }
 
-    // 标签（可选 + 折叠）
-    if (this.settings.showSidebarTags) {
-      const tagCount = new Map<string, number>();
-      for (const m of memos)
-        for (const t of m.tags) {
-          if (RESERVED_TAGS.has(t)) continue;
-          tagCount.set(t, (tagCount.get(t) ?? 0) + 1);
-        }
-
-      if (tagCount.size) {
-        const sectionHead = this.sidebarEl.createDiv({
-          cls: "memoria-sidebar-section memoria-section-collapsible",
-        });
-        sectionHead.createSpan({
-          cls: "memoria-section-arrow",
-          text: this.tagsExpanded ? "▾" : "▸",
-        });
-        sectionHead.createSpan({ text: ` ${t("sidebar.section.tags")} (${tagCount.size})` });
-        sectionHead.addEventListener("click", () => {
-          this.tagsExpanded = !this.tagsExpanded;
-          this.renderSidebar();
-        });
-        if (this.tagsExpanded) {
-          const tree = this.buildTagTree(tagCount);
-          this.renderTagTree(this.sidebarEl, tree, 0);
-        }
-      }
+    if (!collapsed) {
+      const content = group.createDiv({ cls: "memoria-sidebar-section-content" });
+      renderContent(content);
     }
   }
 
+  private saveSidebarSettings(): void {
+    void this.plugin.saveSettings().catch((error: unknown) => {
+      console.error("[Memoria] Failed to save sidebar layout:", error);
+    });
+  }
+
+  private clearSidebarDragState(): void {
+    this.sidebarDragSection = null;
+    this.sidebarEl
+      .querySelectorAll<HTMLElement>(".memoria-sidebar-group")
+      .forEach((group) => {
+        group.removeClass("is-dragging");
+        group.removeClass("is-drag-over-before");
+        group.removeClass("is-drag-over-after");
+      });
+  }
+
+  private moveSidebarSection(
+    dragged: SidebarSectionId,
+    target: SidebarSectionId,
+    before: boolean
+  ): void {
+    const order = normalizeSidebarSectionOrder(this.settings.sidebarSectionOrder);
+    const fromIndex = order.indexOf(dragged);
+    if (fromIndex < 0 || dragged === target) {
+      this.clearSidebarDragState();
+      return;
+    }
+    order.splice(fromIndex, 1);
+    const targetIndex = order.indexOf(target);
+    if (targetIndex < 0) {
+      this.clearSidebarDragState();
+      return;
+    }
+    order.splice(before ? targetIndex : targetIndex + 1, 0, dragged);
+    this.settings.sidebarSectionOrder = order;
+    this.clearSidebarDragState();
+    this.renderSidebar();
+    this.saveSidebarSettings();
+  }
+
+  private countSavedSearch(saved: SavedSearch): number {
+    return this.store
+      .getAll()
+      .filter((memo) => this.matchesSavedSearch(memo, saved))
+      .length;
+  }
+
+  private matchesSavedSearch(memo: Memo, saved: SavedSearch): boolean {
+    const query = parseSearchQuery(saved.query);
+    if (!matchesQuery(memo.content, memo.tags, memo.date, query)) return false;
+    return this.matchesSavedSearchFilters(memo, saved.filters ?? []);
+  }
+
+  private matchesSavedSearchFilters(
+    memo: Memo,
+    filters: SavedSearchFilter[]
+  ): boolean {
+    for (const filter of filters) {
+      const value = filter.value.toLowerCase();
+      let matched = false;
+      switch (filter.field) {
+        case "tag":
+          matched = memo.tags.some(
+            (tag) =>
+              tag.toLowerCase() === value ||
+              tag.toLowerCase().startsWith(value + "/")
+          );
+          break;
+        case "text":
+          matched = memo.content.toLowerCase().includes(value);
+          break;
+        case "date":
+          if (filter.operator === "after") matched = memo.date >= filter.value;
+          else if (filter.operator === "before") matched = memo.date <= filter.value;
+          else matched = memo.date === filter.value;
+          break;
+        case "type":
+          matched =
+            (filter.value === "image" && memo.hasImage) ||
+            (filter.value === "link" && memo.hasLink) ||
+            (filter.value === "text" && memo.content.trim().length > 0) ||
+            (filter.value === "no-text" && memo.content.trim().length === 0);
+          break;
+        case "status":
+          matched =
+            (filter.value === "pinned" && memo.isPinned) ||
+            (filter.value === "starred" && memo.isStarred) ||
+            (filter.value === "todo" && memo.hasOpenTask) ||
+            (filter.value === "done" && memo.hasClosedTask);
+          break;
+        case "source":
+          matched = memo.file === filter.value;
+          break;
+        case "path": {
+          const slash = memo.file.lastIndexOf("/");
+          const folder = slash >= 0 ? memo.file.slice(0, slash) : "";
+          matched = folder === filter.value;
+          break;
+        }
+        case "metadata":
+          matched =
+            (filter.value === "image" && memo.hasImage) ||
+            (filter.value === "link" && memo.hasLink) ||
+            (filter.value === "tag" && memo.tags.length > 0) ||
+            (filter.value === "no-tag" && memo.tags.length === 0);
+          break;
+      }
+      if (filter.operator === "exclude") matched = !matched;
+      if (!matched) return false;
+    }
+    return true;
+  }
+
+  private isSearchItemActive(item: SidebarSearchItem): boolean {
+    if (this.filter.tag || this.filter.year || this.filter.date) return false;
+    if (item.type === "preset") {
+      return this.filter.preset === item.value && !this.filter.keyword;
+    }
+    if (item.savedId && this.activeSavedSearchId) {
+      return item.savedId === this.activeSavedSearchId;
+    }
+    return this.filter.preset === "all" && this.filter.keyword.trim() === item.value;
+  }
+
+  private isSearchItemPinned(item: SidebarSearchItem): boolean {
+    const pinned = this.settings.pinnedSearch;
+    if (!pinned || pinned.type !== item.type) return false;
+    if (item.type === "query" && pinned.savedId && item.savedId) {
+      return pinned.savedId === item.savedId;
+    }
+    return pinned.value === item.value;
+  }
+
+  private renderSearchNavItem(
+    parent: HTMLElement,
+    item: SidebarSearchItem
+  ): void {
+    const active = this.isSearchItemActive(item);
+    const pinned = this.isSearchItemPinned(item);
+    const el = parent.createDiv({
+      cls:
+        "memoria-nav-item memoria-search-nav-item" +
+        (active ? " active" : "") +
+        (pinned ? " is-search-pinned" : ""),
+    });
+    if (item.type === "query") {
+      el.setAttr("title", item.value || item.text);
+    }
+
+    const iconEl = el.createDiv({ cls: "memoria-nav-icon" });
+    setIcon(iconEl, item.icon);
+    el.createSpan({ cls: "memoria-nav-text", text: item.text });
+
+    // 只在当前检索式或已固定的检索式上挂按钮；普通行不会占用右侧空间。
+    if (active || pinned) {
+      const pinButton = el.createEl("button", {
+        cls: "memoria-search-pin-btn",
+        attr: {
+          "aria-label": t(
+            pinned ? "sidebar.search.unpin" : "sidebar.search.pin"
+          ),
+          title: t(pinned ? "sidebar.search.unpin" : "sidebar.search.pin"),
+        },
+      });
+      setIcon(pinButton, pinned ? "pin-off" : "pin");
+      pinButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void this.toggleSearchPin(item);
+      });
+    }
+    el.createSpan({ cls: "memoria-nav-count", text: String(item.count) });
+    el.addEventListener("click", () => this.applySearchItem(item));
+
+    // 自定义检索式提供右键菜单，方便后续修改或删除，不把按钮堆在截图中的红框区域。
+    if (item.type === "query" && item.savedId) {
+      el.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        const saved = this.settings.savedSearches.find(
+          (search) => search.id === item.savedId
+        );
+        if (!saved) return;
+        const menu = new Menu();
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle(t("sidebar.search.edit"))
+            .setIcon("pencil")
+            .onClick(() => this.openSavedSearchModal(saved))
+        );
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle(t("sidebar.search.delete"))
+            .setIcon("trash")
+            .onClick(() => {
+              void this.deleteSavedSearch(saved);
+            })
+        );
+        menu.showAtMouseEvent(event);
+      });
+    }
+  }
+
+  private applySearchItem(item: SidebarSearchItem): void {
+    this.filter.tag = null;
+    this.filter.year = null;
+    this.filter.date = null;
+    if (item.type === "preset") {
+      this.activeSavedSearchId = null;
+      this.activeSavedSearchFilters = null;
+      this.filter.preset = item.value as Filter["preset"];
+      this.filter.keyword = "";
+    } else {
+      this.filter.preset = "all";
+      this.filter.keyword = item.value;
+      this.activeSavedSearchId = item.savedId ?? null;
+      this.activeSavedSearchFilters = item.filters ?? null;
+    }
+    if (this.searchEl) this.searchEl.value = this.filter.keyword;
+    this.pageLimit = this.getInitialPageLimit();
+    this.renderAll();
+  }
+
+  private applySavedSearch(saved: SavedSearch): void {
+    this.setSearchDefinition({ type: "query", value: saved.query });
+    this.activeSavedSearchId = saved.id;
+    this.activeSavedSearchFilters = saved.filters ?? null;
+  }
+
+  private setSearchDefinition(search: Pick<PinnedSearch, "type" | "value">): void {
+    this.filter.tag = null;
+    this.filter.year = null;
+    this.filter.date = null;
+    this.activeSavedSearchId = null;
+    this.activeSavedSearchFilters = null;
+    if (search.type === "preset") {
+      this.filter.preset = search.value as Filter["preset"];
+      this.filter.keyword = "";
+    } else {
+      this.filter.preset = "all";
+      this.filter.keyword = search.value;
+    }
+    if (this.searchEl) this.searchEl.value = this.filter.keyword;
+    this.pageLimit = this.getInitialPageLimit();
+  }
+
+  private applyPinnedSearch(): void {
+    const pinned = this.settings.pinnedSearch;
+    if (!pinned) return;
+
+    // 自定义检索式以 savedId 为准，确保未来编辑检索式后，固定状态仍跟随新内容。
+    if (pinned.type === "query" && pinned.savedId) {
+      const saved = this.settings.savedSearches.find(
+        (search) => search.id === pinned.savedId
+      );
+      if (!saved) {
+        this.settings.pinnedSearch = null;
+        void this.plugin.saveSettings().catch((error: unknown) => {
+          console.error("[Memoria] Failed to clear missing pinned search:", error);
+        });
+        return;
+      }
+      this.applySavedSearch(saved);
+      return;
+    }
+    this.setSearchDefinition(pinned);
+  }
+
+  private async toggleSearchPin(item: SidebarSearchItem): Promise<void> {
+    const wasPinned = this.isSearchItemPinned(item);
+    if (wasPinned) {
+      this.settings.pinnedSearch = null;
+    } else {
+      this.settings.pinnedSearch = {
+        type: item.type,
+        value: item.value,
+        name: item.text,
+        ...(item.savedId ? { savedId: item.savedId } : {}),
+      };
+    }
+    try {
+      await this.plugin.saveSettings();
+    } catch (error) {
+      console.error("[Memoria] Failed to save pinned search:", error);
+    }
+    new Notice(
+      t(wasPinned ? "sidebar.search.unpinnedNotice" : "sidebar.search.pinnedNotice")
+    );
+    this.renderAll();
+  }
+
+  private getBuilderConditions(existing?: SavedSearch): SearchBuilderCondition[] {
+    const filters = existing?.filters?.length
+      ? existing.filters
+      : this.conditionsFromLegacyQuery(existing?.query ?? "");
+    if (!filters.length) {
+      return [{ field: "", operator: "include", value: "" }];
+    }
+    return filters.map((filter) => ({ ...filter }));
+  }
+
+  private conditionsFromLegacyQuery(queryText: string): SavedSearchFilter[] {
+    const query = parseSearchQuery(queryText);
+    const filters: SavedSearchFilter[] = [];
+    for (const tag of query.includeTags) {
+      filters.push({ field: "tag", operator: "include", value: tag });
+    }
+    for (const tag of query.excludeTags) {
+      filters.push({ field: "tag", operator: "exclude", value: tag });
+    }
+    for (const term of query.includeTerms) {
+      filters.push({ field: "text", operator: "include", value: term });
+    }
+    for (const term of query.excludeTerms) {
+      filters.push({ field: "text", operator: "exclude", value: term });
+    }
+    if (query.afterDate && query.beforeDate && query.afterDate === query.beforeDate) {
+      filters.push({ field: "date", operator: "equals", value: query.afterDate });
+    } else {
+      if (query.afterDate) {
+        filters.push({ field: "date", operator: "after", value: query.afterDate });
+      }
+      if (query.beforeDate) {
+        filters.push({ field: "date", operator: "before", value: query.beforeDate });
+      }
+    }
+    return filters;
+  }
+
+  private getSearchBuilderOptions(field: SavedSearchFilterField): string[] {
+    if (field === "tag") {
+      return [...new Set(this.store.getAll().flatMap((memo) => memo.tags))].sort();
+    }
+    if (field === "source") {
+      return [...new Set(this.store.getAll().map((memo) => memo.file))].sort();
+    }
+    if (field === "path") {
+      return [
+        ...new Set(
+          this.store.getAll().map((memo) => {
+            const slash = memo.file.lastIndexOf("/");
+            return slash >= 0 ? memo.file.slice(0, slash) : "";
+          })
+        ),
+      ].sort();
+    }
+    return [];
+  }
+
+  private getSearchBuilderValueLabel(field: SavedSearchFilterField, value: string): string {
+    const key = `sidebar.search.builder.value.${value === "no-text" ? "noText" : value}`;
+    if (["image", "link", "text", "no-text", "pinned", "starred", "todo", "done", "tag", "no-tag"].includes(value)) {
+      return t(key);
+    }
+    return value || t("sidebar.search.builder.chooseValue");
+  }
+
+  private renderSearchBuilderCondition(
+    parent: HTMLElement,
+    condition: SearchBuilderCondition,
+    onChange: () => void,
+    canRemove: boolean
+  ): void {
+    const row = parent.createDiv({ cls: "memoria-search-condition-row" });
+    const fieldSelect = row.createEl("select", {
+      cls: "memoria-search-condition-field",
+      attr: { "aria-label": t("sidebar.search.builder.field") },
+    });
+    const fieldOptions: Array<SavedSearchFilterField | ""> = [
+      "",
+      "tag",
+      "type",
+      "text",
+      "date",
+      "status",
+      "source",
+      "path",
+      "metadata",
+    ];
+    for (const field of fieldOptions) {
+      fieldSelect.createEl("option", {
+        text: field
+          ? t(`sidebar.search.builder.field.${field}`)
+          : t("sidebar.search.builder.chooseField"),
+        attr: { value: field },
+      });
+    }
+    fieldSelect.value = condition.field;
+
+    const operatorSelect = row.createEl("select", {
+      cls: "memoria-search-condition-operator",
+      attr: { "aria-label": t("sidebar.search.builder.operator") },
+    });
+    const detailWrap = row.createDiv({ cls: "memoria-search-condition-detail" });
+    const removeButton = row.createEl("button", {
+      cls: "memoria-search-condition-remove",
+      attr: {
+        "aria-label": t("sidebar.search.builder.removeCondition"),
+        title: t("sidebar.search.builder.removeCondition"),
+      },
+    });
+    setIcon(removeButton, "x");
+    removeButton.toggleClass("is-hidden", !canRemove);
+
+    const renderDetail = (): void => {
+      detailWrap.empty();
+      if (!condition.field) {
+        const select = detailWrap.createEl("select", {
+          cls: "memoria-search-condition-value",
+          attr: { disabled: "true" },
+        });
+        select.createEl("option", {
+          text: t("sidebar.search.builder.chooseValue"),
+          attr: { value: "" },
+        });
+        return;
+      }
+
+      if (condition.field === "text") {
+        const input = detailWrap.createEl("input", {
+          cls: "memoria-search-condition-value",
+          attr: {
+            type: "text",
+            placeholder: t("sidebar.search.builder.textPlaceholder"),
+            value: condition.value,
+          },
+        });
+        input.addEventListener("input", () => {
+          condition.value = input.value;
+          onChange();
+        });
+        return;
+      }
+
+      if (condition.field === "date") {
+        const input = detailWrap.createEl("input", {
+          cls: "memoria-search-condition-value",
+          attr: { type: "date", value: condition.value },
+        });
+        input.addEventListener("change", () => {
+          condition.value = input.value;
+          onChange();
+        });
+        return;
+      }
+
+      const select = detailWrap.createEl("select", {
+        cls: "memoria-search-condition-value",
+      });
+      select.createEl("option", {
+        text: t("sidebar.search.builder.chooseValue"),
+        attr: { value: "" },
+      });
+      let values: string[];
+      if (condition.field === "type") {
+        values = ["image", "link", "text", "no-text"];
+      } else if (condition.field === "status") {
+        values = ["pinned", "starred", "todo", "done"];
+      } else if (condition.field === "metadata") {
+        values = ["image", "link", "tag", "no-tag"];
+      } else {
+        values = this.getSearchBuilderOptions(condition.field);
+      }
+      for (const value of values) {
+        select.createEl("option", {
+          text: this.getSearchBuilderValueLabel(condition.field, value),
+          attr: { value },
+        });
+      }
+      if (condition.value && !values.includes(condition.value)) {
+        select.createEl("option", {
+          text: condition.value,
+          attr: { value: condition.value },
+        });
+      }
+      select.value = condition.value;
+      select.addEventListener("change", () => {
+        condition.value = select.value;
+        onChange();
+      });
+    };
+
+    const renderOperators = (): void => {
+      operatorSelect.empty();
+      const operators: SavedSearchFilterOperator[] =
+        condition.field === "date"
+          ? ["equals", "after", "before"]
+          : ["include", "exclude"];
+      if (!operators.includes(condition.operator)) {
+        condition.operator = operators[0];
+      }
+      for (const operator of operators) {
+        operatorSelect.createEl("option", {
+          text: t(`sidebar.search.builder.operator.${operator}`),
+          attr: { value: operator },
+        });
+      }
+      operatorSelect.value = condition.operator;
+      renderDetail();
+    };
+
+    fieldSelect.addEventListener("change", () => {
+      condition.field = fieldSelect.value as SearchBuilderCondition["field"];
+      condition.value = "";
+      condition.operator = "include";
+      renderOperators();
+      onChange();
+    });
+    operatorSelect.addEventListener("change", () => {
+      condition.operator = operatorSelect.value as SavedSearchFilterOperator;
+      onChange();
+    });
+    removeButton.addEventListener("click", () => {
+      row.dispatchEvent(new CustomEvent("memoria-remove-condition"));
+    });
+    renderOperators();
+    row.addEventListener("memoria-remove-condition", () => {
+      row.remove();
+      onChange();
+    });
+  }
+
+  private buildSavedSearchQuery(filters: SavedSearchFilter[]): string {
+    const tokens: string[] = [];
+    for (const filter of filters) {
+      if (filter.field === "tag") {
+        tokens.push(`${filter.operator === "exclude" ? "-" : ""}#${filter.value}`);
+      } else if (filter.field === "text") {
+        const terms = filter.value.split(/\s+/).filter(Boolean);
+        for (const term of terms) {
+          tokens.push(`${filter.operator === "exclude" ? "-" : ""}${term}`);
+        }
+      } else if (filter.field === "date") {
+        const prefix =
+          filter.operator === "after"
+            ? "after"
+            : filter.operator === "before"
+            ? "before"
+            : "date";
+        tokens.push(`${prefix}:${filter.value}`);
+      }
+    }
+    return tokens.join(" ");
+  }
+
+  private openSavedSearchModal(existing?: SavedSearch): void {
+    const backdrop = activeDocument.body.createDiv({ cls: "memoria-modal-backdrop" });
+    const box = backdrop.createDiv({
+      cls: "memoria-modal memoria-search-modal",
+    });
+    box.createDiv({
+      cls: "memoria-modal-title",
+      text: t(existing ? "sidebar.search.editTitle" : "sidebar.search.addTitle"),
+    });
+
+    box.createDiv({ cls: "memoria-modal-label", text: t("sidebar.search.name") });
+    const nameInput = box.createEl("input", {
+      cls: "memoria-modal-input",
+      attr: {
+        type: "text",
+        maxlength: "80",
+        placeholder: t("sidebar.search.namePlaceholder"),
+        value: existing?.name ?? "",
+      },
+    });
+
+    const builderHead = box.createDiv({ cls: "memoria-search-builder-head" });
+    builderHead.createSpan({ text: t("sidebar.search.builder.field") });
+    builderHead.createSpan({ text: t("sidebar.search.builder.operator") });
+    builderHead.createSpan({ text: t("sidebar.search.builder.detail") });
+    const conditionsWrap = box.createDiv({ cls: "memoria-search-conditions" });
+    const conditions = this.getBuilderConditions(existing);
+    const preview = box.createDiv({ cls: "memoria-search-preview" });
+
+    const getValidFilters = (): SavedSearchFilter[] =>
+      conditions
+        .filter((condition) => condition.field && condition.value.trim())
+        .map((condition) => ({
+          field: condition.field as SavedSearchFilterField,
+          operator: condition.operator,
+          value: condition.value.trim(),
+        }));
+    const updatePreview = (): void => {
+      const filters = getValidFilters();
+      if (!filters.length) {
+        preview.setText("");
+        return;
+      }
+      const count = this.countSavedSearch({
+        id: "preview",
+        name: "preview",
+        query: this.buildSavedSearchQuery(filters),
+        filters,
+      });
+      preview.setText(t("sidebar.search.builder.matchCount", { n: count }));
+    };
+    const renderConditions = (): void => {
+      conditionsWrap.empty();
+      conditions.forEach((condition, index) => {
+        this.renderSearchBuilderCondition(
+          conditionsWrap,
+          condition,
+          updatePreview,
+          conditions.length > 1
+        );
+        const row = conditionsWrap.lastElementChild;
+        row?.addEventListener("memoria-remove-condition", () => {
+          conditions.splice(index, 1);
+          if (!conditions.length) {
+            conditions.push({ field: "", operator: "include", value: "" });
+          }
+          renderConditions();
+          updatePreview();
+        });
+      });
+      updatePreview();
+    };
+    renderConditions();
+
+    const addCondition = box.createEl("button", {
+      cls: "memoria-search-add-condition",
+      text: `+ ${t("sidebar.search.builder.addCondition")}`,
+    });
+    addCondition.addEventListener("click", () => {
+      conditions.push({ field: "", operator: "include", value: "" });
+      renderConditions();
+    });
+
+    const footer = box.createDiv({ cls: "memoria-search-modal-footer" });
+    footer.appendChild(preview);
+    const btns = footer.createDiv({ cls: "memoria-modal-btns" });
+    const cancel = btns.createEl("button", {
+      text: t("sidebar.search.cancel"),
+    });
+    const save = btns.createEl("button", {
+      text: t("sidebar.search.save"),
+      cls: "mod-cta",
+    });
+
+    let settled = false;
+    const cleanup = () => {
+      activeDocument.removeEventListener("keydown", onKey, true);
+    };
+    const close = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      backdrop.remove();
+    };
+    const submit = () => {
+      const name = nameInput.value.trim();
+      const filters = getValidFilters();
+      if (!name) {
+        new Notice(t("sidebar.search.builder.nameRequired"));
+        nameInput.focus();
+        return;
+      }
+      if (!filters.length || filters.length !== conditions.length) {
+        new Notice(t("sidebar.search.builder.conditionRequired"));
+        return;
+      }
+      close();
+      void this.saveSavedSearch(
+        name,
+        this.buildSavedSearchQuery(filters),
+        filters,
+        existing?.id
+      );
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      } else if (event.key === "Enter" && event.target === nameInput) {
+        event.preventDefault();
+        submit();
+      }
+    };
+    cancel.addEventListener("click", close);
+    save.addEventListener("click", submit);
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) close();
+    });
+    activeDocument.addEventListener("keydown", onKey, true);
+    this.register(() => close());
+    window.setTimeout(() => {
+      nameInput.focus();
+      if (existing) nameInput.select();
+    }, 50);
+  }
+
+  private async saveSavedSearch(
+    name: string,
+    query: string,
+    filters: SavedSearchFilter[],
+    existingId?: string
+  ): Promise<void> {
+    const savedSearches = [...this.settings.savedSearches];
+    const existingIndex = existingId
+      ? savedSearches.findIndex((search) => search.id === existingId)
+      : -1;
+    const id =
+      existingIndex >= 0
+        ? existingId!
+        : `search-${Date.now().toString(36)}-${Math.random()
+            .toString(36)
+            .slice(2, 8)}`;
+    const saved: SavedSearch = {
+      id,
+      name: name.slice(0, 80),
+      query: query.slice(0, 500),
+      filters: filters.map((filter) => ({ ...filter })),
+    };
+    if (existingIndex >= 0) savedSearches[existingIndex] = saved;
+    else savedSearches.push(saved);
+    this.settings.savedSearches = savedSearches;
+
+    if (this.settings.pinnedSearch?.savedId === id) {
+      this.settings.pinnedSearch = {
+        ...this.settings.pinnedSearch,
+        value: saved.query,
+        name: saved.name,
+      };
+    }
+    try {
+      await this.plugin.saveSettings();
+    } catch (error) {
+      console.error("[Memoria] Failed to save custom search:", error);
+    }
+    this.applySavedSearch(saved);
+    this.renderAll();
+  }
+
+  private async deleteSavedSearch(saved: SavedSearch): Promise<void> {
+    if (!(await this.confirmAsync(t("sidebar.search.deleteConfirm", { name: saved.name })))) {
+      return;
+    }
+    this.settings.savedSearches = this.settings.savedSearches.filter(
+      (search) => search.id !== saved.id
+    );
+    if (this.settings.pinnedSearch?.savedId === saved.id) {
+      this.settings.pinnedSearch = null;
+    }
+    if (this.activeSavedSearchId === saved.id) {
+      this.activeSavedSearchId = null;
+      this.activeSavedSearchFilters = null;
+    }
+    try {
+      await this.plugin.saveSettings();
+    } catch (error) {
+      console.error("[Memoria] Failed to delete custom search:", error);
+    }
+    this.renderAll();
+  }
+
   private renderNavItem(
+    parent: HTMLElement,
     key: Filter["preset"],
     icon: string,
     text: string,
@@ -2045,7 +3005,7 @@ export class MemoriaView extends ItemView {
   ): void {
     const isActive =
       this.filter.preset === key && !this.filter.tag && !this.filter.year;
-    const el = this.sidebarEl.createDiv({
+    const el = parent.createDiv({
       cls: "memoria-nav-item" + (isActive ? " active" : ""),
     });
     const iconEl = el.createDiv({ cls: "memoria-nav-icon" });
@@ -2059,6 +3019,8 @@ export class MemoriaView extends ItemView {
       this.filter.tag = null;
       this.filter.year = null;
       this.filter.date = null;
+      this.activeSavedSearchId = null;
+      this.activeSavedSearchFilters = null;
       if (key === "random") this.filter.randomSeed = Date.now();
       this.pageLimit = this.getInitialPageLimit();
       this.renderAll();
@@ -2782,6 +3744,12 @@ export class MemoriaView extends ItemView {
       // 高级查询匹配（零筛选条件时直接通过）
       if (
         !matchesQuery(memo.content, memo.tags, memo.date, query)
+      ) {
+        return false;
+      }
+      if (
+        this.activeSavedSearchFilters &&
+        !this.matchesSavedSearchFilters(memo, this.activeSavedSearchFilters)
       ) {
         return false;
       }
@@ -4954,12 +5922,3 @@ function normalizeForRender(raw: string): string {
 
   return out.join("\n");
 }
-
-
-
-
-
-
-
-
-
