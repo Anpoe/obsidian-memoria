@@ -5183,12 +5183,12 @@
 
 .view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
   position: absolute;
-  /* 原生左侧面板入口比右侧更多菜单更宽，左右安全区刻意不对称。 */
-  inset: var(--memoria-mobile-safe-top) 64px 0 72px;
+  /* 原生左右入口会被隐藏，插件自己的按钮可以使用整行宽度。 */
+  inset: var(--memoria-mobile-safe-top) 12px 0 12px;
   z-index: 2;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   min-width: 0;
   max-width: 100%;
   gap: 0;
@@ -5214,15 +5214,10 @@
 
 .memoria-mobile-topbar .memoria-topbar-title {
   order: -2;
-  flex: 0 0 24px;
-  width: 24px;
-  min-width: 0;
-  gap: 0;
-  font-size: 0;
-  white-space: nowrap;
+  display: none !important;
 }
 
-/* 移动端顶部只保留功能图标，不显示会挤压工具栏的 Memoria 文字。 */
+/* 移动端顶部只保留功能图标，不显示 Memoria 文字或羽毛图标。 */
 .memoria-mobile-topbar .memoria-brand {
   display: none !important;
 }
@@ -5240,7 +5235,8 @@
   height: 30px;
   display: flex;
   align-items: center;
-  margin-left: 0;
+  margin-left: auto;
+  margin-right: 2px;
   padding: 0;
   gap: 0;
   border: none;
@@ -5287,10 +5283,11 @@
 
 .memoria-mobile-topbar .memoria-topbar-tools {
   order: 0;
-  display: contents;
+  display: flex;
+  align-items: center;
   flex: none;
   min-width: 0;
-  margin-left: 0;
+  margin-left: 2px;
   gap: 0;
 }
 
@@ -5345,7 +5342,7 @@
 .memoria-mobile-topbar.memoria-mobile-search-open .memoria-sidebar-toggle,
 .memoria-mobile-topbar.memoria-mobile-search-open .memoria-topbar-title,
 .memoria-mobile-topbar.memoria-mobile-search-open .memoria-topbar-tools {
-  display: none;
+  display: none !important;
 }
 
 .memoria-mobile-topbar.memoria-mobile-search-open .memoria-search-wrap {
@@ -5398,12 +5395,10 @@
   color: var(--text-normal);
 }
 
-/* 原生左右入口始终在插件工具层之上；插件层仍保留左右安全区，正常情况下
- * 不会盖住它们。 */
+/* 这两个是 Obsidian 原生的蓝框入口；移动端 Memoria 顶栏由插件按钮独占。 */
 .view-header.memoria-mobile-header-enabled .view-header-icon,
 .view-header.memoria-mobile-header-enabled .view-actions {
-  position: relative;
-  z-index: 3;
+  display: none !important;
 }
 
 /* view-header 是 view-content 的同级元素；有些移动主题会把自己的 padding
@@ -5416,8 +5411,8 @@
 /* 超窄设备上优先保留按钮的可点击面积；品牌文字让出一点空间。 */
 @media (max-width: 380px) {
   .view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
-    /* 只调整左右宽度，不能把系统状态栏安全区重置为 0。 */
-    inset: var(--memoria-mobile-safe-top) 52px 0 56px;
+    /* 只缩小左右边距，不能把系统状态栏安全区重置为 0。 */
+    inset: var(--memoria-mobile-safe-top) 8px 0 8px;
     padding-inline: 2px;
   }
 
