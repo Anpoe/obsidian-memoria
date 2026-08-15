@@ -5155,9 +5155,12 @@
   position: relative;
   /* 保留 Obsidian 手机端的状态栏安全区。之前把 padding 清零后，
    * 系统时间、信号和电量会直接压到插件按钮上。 */
-  --memoria-mobile-safe-top: var(
-    --view-header-top-offset,
-    var(--safe-area-inset-top, env(safe-area-inset-top, 0px))
+  /* 给动态岛 / 系统状态栏再留一点视觉缓冲，避免图标贴得太近。 */
+  --memoria-mobile-safe-top: calc(
+    var(
+      --view-header-top-offset,
+      var(--safe-area-inset-top, env(safe-area-inset-top, 0px))
+    ) + 10px
   );
   flex: 0 0 calc(52px + var(--memoria-mobile-safe-top)) !important;
   height: calc(52px + var(--memoria-mobile-safe-top)) !important;
@@ -5413,7 +5416,8 @@
 /* 超窄设备上优先保留按钮的可点击面积；品牌文字让出一点空间。 */
 @media (max-width: 380px) {
   .view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
-    inset: 0 52px 0 56px;
+    /* 只调整左右宽度，不能把系统状态栏安全区重置为 0。 */
+    inset: var(--memoria-mobile-safe-top) 52px 0 56px;
     padding-inline: 2px;
   }
 
