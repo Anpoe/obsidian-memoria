@@ -5401,6 +5401,14 @@
   display: none !important;
 }
 
+/* 某些 Obsidian 手机版本不会使用 .view-actions 作为右侧更多按钮的容器。
+ * 参考 Hobbit 的移动端沉浸模式，改成白名单策略：原生 header 下只保留
+ * Memoria 自己挂入的 topbar，其余原生入口全部隐藏。 */
+.view-header.memoria-mobile-header-enabled
+  > :not(.memoria-mobile-topbar) {
+  display: none !important;
+}
+
 /* view-header 是 view-content 的同级元素；有些移动主题会把自己的 padding
  * 重新加回 view-content，造成 header 和第一张卡片之间再次出现空白。 */
 .workspace-leaf-content[data-type="memoria-view"] > .view-content {
