@@ -5153,16 +5153,20 @@
  * ================================================================ */
 .view-header.memoria-mobile-header-enabled {
   position: relative;
-  /* 不使用 --header-height：部分移动端主题会把它定义成内容区高度，
-   * 这会让原生 header 在工具栏下面留下整块空白。 */
-  flex: 0 0 52px !important;
-  height: 52px !important;
-  min-height: 52px !important;
-  max-height: 52px !important;
-  block-size: 52px !important;
-  min-block-size: 52px !important;
-  max-block-size: 52px !important;
-  padding: 0 !important;
+  /* 保留 Obsidian 手机端的状态栏安全区。之前把 padding 清零后，
+   * 系统时间、信号和电量会直接压到插件按钮上。 */
+  --memoria-mobile-safe-top: var(
+    --view-header-top-offset,
+    var(--safe-area-inset-top, env(safe-area-inset-top, 0px))
+  );
+  flex: 0 0 calc(52px + var(--memoria-mobile-safe-top)) !important;
+  height: calc(52px + var(--memoria-mobile-safe-top)) !important;
+  min-height: calc(52px + var(--memoria-mobile-safe-top)) !important;
+  max-height: calc(52px + var(--memoria-mobile-safe-top)) !important;
+  block-size: calc(52px + var(--memoria-mobile-safe-top)) !important;
+  min-block-size: calc(52px + var(--memoria-mobile-safe-top)) !important;
+  max-block-size: calc(52px + var(--memoria-mobile-safe-top)) !important;
+  padding: var(--memoria-mobile-safe-top) 0 0 !important;
   margin: 0 !important;
   overflow: visible !important;
   box-sizing: border-box !important;
@@ -5177,7 +5181,7 @@
 .view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
   position: absolute;
   /* 原生左侧面板入口比右侧更多菜单更宽，左右安全区刻意不对称。 */
-  inset: 0 64px 0 72px;
+  inset: var(--memoria-mobile-safe-top) 64px 0 72px;
   z-index: 2;
   display: flex;
   align-items: center;
