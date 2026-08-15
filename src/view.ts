@@ -98,6 +98,12 @@ interface SearchBuilderCondition {
 
 export class MemoriaView extends ItemView {
   private workspaceLeafEl: HTMLElement | null = null;
+  /** 移动端把现有 topbar 挂进 Obsidian 原生 view-header 时使用。 */
+  private mobileHeaderEl: HTMLElement | null = null;
+  private mobileTopbarEl: HTMLElement | null = null;
+  private mobileSearchTriggerEl: HTMLElement | null = null;
+  private mobileSearchInputEl: HTMLInputElement | null = null;
+  private mobileSearchOpen = false;
   private filter: Filter = {
     tag: null,
     year: null,
@@ -220,6 +226,7 @@ export class MemoriaView extends ItemView {
     this.contentEl.addClass("memoria-root");
     this.buildLayout();
     this.applyPinnedSearch();
+    this.syncMobileHeader();
     this.unsubscribe = this.store.onChange(() => this.renderAll());
 
     // v2.0.14: Obsidian 内置命令「在新标签页中打开光标处链接」默认占用 Ctrl+Enter。
@@ -261,6 +268,7 @@ export class MemoriaView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.restoreMobileHeader();
     this.workspaceLeafEl?.removeClass("memoria-workspace-leaf");
     this.workspaceLeafEl = null;
     this.disposeImagePicker();
@@ -468,6 +476,7 @@ export class MemoriaView extends ItemView {
       syncSidebarToggleIcon();
     });
     this.registerDomEvent(window, "resize", syncSidebarToggleIcon);
+    this.registerDomEvent(window, "resize", () => this.syncMobileHeader());
 
     // 输入卡片
     this.buildInputCard(main);
@@ -510,6 +519,109 @@ export class MemoriaView extends ItemView {
     //   可见性由 CSS 控制：仅 (hover: none) and (pointer: coarse) + .memoria-input-fab-mode
     //   时才显示。桌面端永远 display: none，零运行时成本。
     this.buildFab();
+  }
+
+  /**
+   * 移动端使用 Obsidian 自带的 view-header 作为唯一顶部栏。
+   *
+   * 这里移动的是已经绑定好事件的现有 topbar，而不是重新创建一套按钮，
+   * 因此桌面端和移动端始终共享同一份搜索、导出、年度全景和数据报告逻辑。
+   * <=680px 同时作为桌面端窄窗口预览入口，方便在开发时模拟手机宽度。
+   */
+  private syncMobileHeader(): void {
+    const shouldUseMobileHeader =
+      Platform.isMobile || window.innerWidth <= 680;
+
+    if (!shouldUseMobileHeader) {
+      this.restoreMobileHeader();
+      return;
+    }
+
+    const topbar = this.contentEl.querySelector<HTMLElement>(
+      ".memoria-topbar"
+    );
+    const viewHeader =
+      this.workspaceLeafEl?.querySelector<HTMLElement>(".view-header") ??
+      this.containerEl.querySelector<HTMLElement>(".view-header");
+    if (!topbar || !viewHeader) return;
+
+    if (
+      this.mobileTopbarEl === topbar &&
+      topbar.parentElement === viewHeader
+    ) {
+      return;
+    }
+
+    this.mobileHeaderEl = viewHeader;
+    this.mobileTopbarEl = topbar;
+    viewHeader.addClass("memoria-mobile-header-enabled");
+    topbar.addClass("memoria-mobile-topbar");
+    viewHeader.appendChild(topbar);
+
+    // 复用原搜索框；窄屏下默认只显示图标，点击后再展开输入框。
+    const searchTrigger = topbar.querySelector<HTMLElement>(
+      ".memoria-search-icon"
+    );
+    if (searchTrigger && this.mobileSearchTriggerEl !== searchTrigger) {
+      this.mobileSearchTriggerEl = searchTrigger;
+      searchTrigger.setAttr("role", "button");
+      searchTrigger.setAttr(
+        "aria-label",
+        t("search.placeholder")
+      );
+      searchTrigger.setAttr("tabindex", "0");
+      searchTrigger.addEventListener("click", () => {
+        this.setMobileSearchOpen(!this.mobileSearchOpen);
+      });
+      searchTrigger.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        this.setMobileSearchOpen(!this.mobileSearchOpen);
+      });
+    }
+
+    if (this.mobileSearchInputEl !== this.searchEl) {
+      this.mobileSearchInputEl = this.searchEl;
+      this.searchEl.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        event.stopPropagation();
+        this.setMobileSearchOpen(false);
+        this.searchEl.blur();
+      });
+      this.searchEl.addEventListener("blur", () => {
+        // 有内容时保留展开状态，用户能看见当前检索词；空搜索自动收回图标。
+        if (!this.searchEl.value.trim()) this.setMobileSearchOpen(false);
+      });
+    }
+
+    this.setMobileSearchOpen(false);
+  }
+
+  /** 移动端搜索框开关；搜索状态始终由 this.searchEl 统一持有。 */
+  private setMobileSearchOpen(open: boolean): void {
+    this.mobileSearchOpen = open;
+    this.mobileTopbarEl?.toggleClass("memoria-mobile-search-open", open);
+    if (!open) return;
+
+    window.requestAnimationFrame(() => {
+      this.searchEl.focus();
+      this.searchEl.select();
+    });
+  }
+
+  /** 把窄屏时移动到原生 header 的 topbar 放回插件主区域。 */
+  private restoreMobileHeader(): void {
+    const topbar = this.mobileTopbarEl;
+    const main = this.contentEl.querySelector<HTMLElement>(".memoria-main");
+    if (topbar && main && topbar.parentElement !== main) {
+      main.insertBefore(topbar, main.firstChild);
+    }
+    topbar?.removeClass("memoria-mobile-topbar");
+    topbar?.removeClass("memoria-mobile-search-open");
+    this.mobileHeaderEl?.removeClass("memoria-mobile-header-enabled");
+    this.mobileHeaderEl = null;
+    this.mobileTopbarEl = null;
+    this.mobileSearchOpen = false;
   }
 
   /** v2.2.0: 创建移动端 FAB 浮动按钮 + 关闭按钮，并初始化 root 模式 class。

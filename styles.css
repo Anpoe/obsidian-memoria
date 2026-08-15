@@ -5143,3 +5143,296 @@
   opacity: 0;
   pointer-events: none;
 }
+
+/* ================================================================
+ * 移动端原生顶部栏适配
+ *
+ * Memoria 的桌面 topbar 在窄屏 / 真移动端被移动到 Obsidian 原生
+ * .view-header 内。原生左右两侧的面板入口和更多菜单继续由 Obsidian
+ * 管理，中间这组按钮复用插件自己的交互逻辑。
+ * ================================================================ */
+.view-header.memoria-mobile-header-enabled {
+  position: relative;
+  overflow: hidden;
+}
+
+/* 原生标题由插件 topbar 中的品牌标题取代，避免出现两个 Memoria。 */
+.view-header.memoria-mobile-header-enabled .view-header-title {
+  visibility: hidden;
+}
+
+.view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
+  position: absolute;
+  inset: 0 42px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  max-width: none;
+  gap: 3px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.view-header.memoria-mobile-header-enabled
+  > .memoria-mobile-topbar
+  > * {
+  min-width: 0;
+  pointer-events: auto;
+}
+
+.memoria-mobile-topbar .memoria-sidebar-toggle {
+  order: -3;
+  flex: 0 0 28px;
+}
+
+.memoria-mobile-topbar .memoria-topbar-title {
+  order: -2;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 4px;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.memoria-mobile-topbar .memoria-logo .svg-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.memoria-mobile-topbar .memoria-search-wrap {
+  order: -1;
+  flex: 0 0 30px;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  margin-left: 0;
+  padding: 0;
+  gap: 0;
+  border: none;
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.memoria-mobile-topbar .memoria-search-icon {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.memoria-mobile-topbar .memoria-search-icon:hover,
+.memoria-mobile-topbar .memoria-search-icon:focus-visible {
+  background: var(--background-modifier-hover);
+  color: var(--interactive-accent);
+  outline: none;
+}
+
+.memoria-mobile-topbar .memoria-search-icon .svg-icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* 收起态不保留一个 200px 的隐形 input，工具栏会自动按可用宽度排布。 */
+.memoria-mobile-topbar .memoria-search {
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: width 0.16s ease, opacity 0.12s ease;
+}
+
+.memoria-mobile-topbar .memoria-topbar-tools {
+  order: 0;
+  flex: 0 0 auto;
+  min-width: 0;
+  margin-left: 0;
+  gap: 0;
+}
+
+.memoria-mobile-topbar .memoria-icon-btn {
+  width: 28px;
+  height: 30px;
+  padding: 4px !important;
+  flex: 0 0 28px;
+}
+
+.memoria-mobile-topbar .memoria-topbar-tools .memoria-icon-btn .svg-icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* 搜索展开时，把其他插件工具暂时让出空间，输入框不会挤压或遮挡原生菜单。 */
+.memoria-mobile-topbar.memoria-mobile-search-open {
+  justify-content: stretch;
+}
+
+.memoria-mobile-topbar.memoria-mobile-search-open .memoria-sidebar-toggle,
+.memoria-mobile-topbar.memoria-mobile-search-open .memoria-topbar-title,
+.memoria-mobile-topbar.memoria-mobile-search-open .memoria-topbar-tools {
+  display: none;
+}
+
+.memoria-mobile-topbar.memoria-mobile-search-open .memoria-search-wrap {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--memoria-radius-pill);
+  background: var(--background-modifier-form-field);
+}
+
+.memoria-mobile-topbar.memoria-mobile-search-open .memoria-search {
+  width: 100%;
+  max-width: none;
+  padding: 5px 4px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 超窄设备上优先保留按钮的可点击面积；品牌文字让出一点空间。 */
+@media (max-width: 380px) {
+  .view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
+    inset-inline: 36px;
+    gap: 1px;
+  }
+
+  .memoria-mobile-topbar .memoria-brand {
+    font-size: 13px;
+  }
+
+  .memoria-mobile-topbar .memoria-icon-btn,
+  .memoria-mobile-topbar .memoria-sidebar-toggle {
+    width: 25px;
+    flex-basis: 25px;
+  }
+
+  .memoria-mobile-topbar .memoria-search-wrap,
+  .memoria-mobile-topbar .memoria-search-icon {
+    width: 27px;
+    min-width: 27px;
+    flex-basis: 27px;
+  }
+}
+
+/* ================================================================
+ * 移动端卡片密度和 Markdown 对齐
+ *
+ * Obsidian 主题经常给 task-list checkbox 设置负 margin。这个规则把任务
+ * 行改成“复选框列 + 文本列”，复选框不会再跑到卡片边界外，普通段落、列表、
+ * 引用和待办的左边界也保持一致。
+ * ================================================================ */
+@media (max-width: 680px), (hover: none) and (pointer: coarse) {
+  .memoria-list {
+    padding: 10px 12px calc(64px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .memoria-list-meta {
+    padding: 0 4px 10px;
+  }
+
+  .memoria-day-group {
+    margin-bottom: 16px;
+  }
+
+  .memoria-day-head {
+    padding: 4px 4px 8px;
+  }
+
+  .memoria-card {
+    margin-bottom: 10px;
+    padding: 12px 14px 14px;
+  }
+
+  .memoria-card-head {
+    min-height: 24px;
+    margin-bottom: 8px;
+  }
+
+  .memoria-card-time-wrap,
+  .memoria-card-actions {
+    min-height: 24px;
+  }
+
+  .memoria-card-time {
+    line-height: 1.25;
+  }
+
+  .memoria-card-body {
+    font-size: 15px;
+    line-height: 1.55;
+  }
+
+  .memoria-card-body > *:first-child,
+  .memoria-card-body > p:first-child,
+  .memoria-card-body > ul:first-child,
+  .memoria-card-body > ol:first-child,
+  .memoria-card-body > blockquote:first-child {
+    margin-top: 0;
+  }
+
+  .memoria-card-body p {
+    margin: 0.25em 0;
+  }
+
+  .memoria-card-body ul.contains-task-list {
+    margin: 0.3em 0;
+    padding-left: 0 !important;
+    list-style: none;
+  }
+
+  .memoria-card-body ul.contains-task-list > li.task-list-item {
+    display: flex !important;
+    align-items: flex-start;
+    gap: 0.55em;
+    min-width: 0;
+    margin: 0.25em 0;
+    padding-left: 0 !important;
+  }
+
+  .memoria-card-body
+    ul.contains-task-list
+    > li.task-list-item
+    > input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 1.05em;
+    height: 1.05em;
+    margin: 0.28em 0 0 !important;
+    transform: none;
+    vertical-align: top;
+  }
+
+  .memoria-card-body
+    ul.contains-task-list
+    > li.task-list-item
+    > p {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0 !important;
+  }
+
+  .memoria-card-body ul.contains-task-list > li.task-list-item::before {
+    display: none;
+  }
+
+  /* 折叠态继续覆盖到卡片内边缘，但不再使用桌面端的 18px 固定值。 */
+  .memoria-card-body.is-collapsed {
+    margin-right: -14px;
+    margin-left: -14px;
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+}
