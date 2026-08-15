@@ -5153,7 +5153,14 @@
  * ================================================================ */
 .view-header.memoria-mobile-header-enabled {
   position: relative;
-  overflow: hidden;
+  /* Obsidian 的移动端 view-header 在某些版本会继承很大的 flex 高度；
+   * 明确锁定为原生 header 高度，避免工具栏下面出现整屏空白。 */
+  flex: 0 0 var(--header-height, 44px) !important;
+  height: var(--header-height, 44px) !important;
+  min-height: var(--header-height, 44px) !important;
+  max-height: var(--header-height, 44px) !important;
+  overflow: visible;
+  z-index: 6;
 }
 
 /* 原生标题由插件 topbar 中的品牌标题取代，避免出现两个 Memoria。 */
@@ -5163,15 +5170,15 @@
 
 .view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
   position: absolute;
-  inset: 0 42px;
+  inset: 0 48px;
   z-index: 2;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   min-width: 0;
   max-width: none;
-  gap: 3px;
-  padding: 0 2px;
+  gap: 0;
+  padding: 0 4px;
   border: none;
   background: transparent;
   pointer-events: none;
@@ -5197,6 +5204,12 @@
   gap: 4px;
   font-size: 15px;
   white-space: nowrap;
+}
+
+/* 原有窄屏规则为了节省主内容宽度隐藏了品牌文字；移动原生 header 有独立空间，
+ * 这里保留它，避免只剩一枚羽毛图标。 */
+.memoria-mobile-topbar .memoria-brand {
+  display: inline;
 }
 
 .memoria-mobile-topbar .memoria-logo .svg-icon {
@@ -5255,7 +5268,8 @@
 
 .memoria-mobile-topbar .memoria-topbar-tools {
   order: 0;
-  flex: 0 0 auto;
+  display: contents;
+  flex: none;
   min-width: 0;
   margin-left: 0;
   gap: 0;
@@ -5264,8 +5278,37 @@
 .memoria-mobile-topbar .memoria-icon-btn {
   width: 28px;
   height: 30px;
+  min-width: 28px;
+  min-height: 30px;
   padding: 4px !important;
   flex: 0 0 28px;
+}
+
+/* topbar 被移到 .view-header 后不再是 .memoria-root 的后代，原来的按钮重置
+ * 选择器不会命中；不重置的话 Obsidian 主题会给每个图标套上灰色圆形背景，
+ * 也会把按钮的最小尺寸撑大。 */
+.view-header.memoria-mobile-header-enabled
+  button.memoria-icon-btn {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-muted);
+  line-height: 1;
+}
+
+.view-header.memoria-mobile-header-enabled
+  button.memoria-icon-btn:hover,
+.view-header.memoria-mobile-header-enabled
+  button.memoria-icon-btn:focus-visible {
+  background: var(--background-modifier-hover) !important;
+  color: var(--interactive-accent);
+}
+
+.memoria-mobile-topbar .memoria-topbar-tools > .memoria-icon-btn {
+  pointer-events: auto;
 }
 
 .memoria-mobile-topbar .memoria-topbar-tools .memoria-icon-btn .svg-icon {
@@ -5293,21 +5336,54 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--memoria-radius-pill);
   background: var(--background-modifier-form-field);
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .memoria-mobile-topbar.memoria-mobile-search-open .memoria-search {
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
   max-width: none;
+  height: 100%;
   padding: 5px 4px;
   opacity: 1;
   pointer-events: auto;
 }
 
+/* 输入框已离开 .memoria-root；补上插件原本在 root 内的表单重置，避免
+ * Obsidian 原生 input 的矩形边框、内阴影和默认 padding 造成“截断”。 */
+.view-header.memoria-mobile-header-enabled
+  input.memoria-search,
+.view-header.memoria-mobile-header-enabled
+  input.memoria-search:hover,
+.view-header.memoria-mobile-header-enabled
+  input.memoria-search:focus,
+.view-header.memoria-mobile-header-enabled
+  input.memoria-search:active {
+  box-sizing: border-box;
+  min-width: 0;
+  border: none !important;
+  background: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* 原生左右入口始终在插件工具层之上；插件层仍保留左右安全区，正常情况下
+ * 不会盖住它们。 */
+.view-header.memoria-mobile-header-enabled .view-header-icon,
+.view-header.memoria-mobile-header-enabled .view-actions {
+  position: relative;
+  z-index: 3;
+}
+
 /* 超窄设备上优先保留按钮的可点击面积；品牌文字让出一点空间。 */
 @media (max-width: 380px) {
   .view-header.memoria-mobile-header-enabled > .memoria-mobile-topbar {
-    inset-inline: 36px;
-    gap: 1px;
+    inset-inline: 42px;
+    padding-inline: 2px;
   }
 
   .memoria-mobile-topbar .memoria-brand {
