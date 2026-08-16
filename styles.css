@@ -1962,21 +1962,34 @@
 
 /* ========== Callout 与卡片协调 ========== */
 .memoria-card-body .callout {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   margin: 0.5em 0;
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 13px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .memoria-card-body .callout-title {
+  min-width: 0;
   padding: 0;
   font-size: 12px;
   font-weight: 600;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .memoria-card-body .callout-content {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 4px;
   padding: 0;
   font-size: 13px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .memoria-card-body .callout-content > *:first-child {
   margin-top: 0;
@@ -1984,23 +1997,55 @@
 .memoria-card-body .callout-content > *:last-child {
   margin-bottom: 0;
 }
+.memoria-card-body .callout-content > * {
+  min-width: 0;
+  max-width: 100%;
+}
 .memoria-card-body .callout-icon {
   font-size: 14px;
 }
 
 /* ========== 任务列表 ========== */
 .memoria-card-body ul.contains-task-list {
-  padding-left: 1em;
+  margin: 0.4em 0;
+  padding-left: 0 !important;
   list-style: none;
 }
-.memoria-card-body li.task-list-item {
-  padding-left: 0;
+.memoria-card-body ul.contains-task-list > li.task-list-item {
+  display: flex !important;
+  align-items: flex-start;
+  gap: 0.55em;
+  min-width: 0;
+  margin: 0.25em 0;
+  padding-left: 0 !important;
 }
-.memoria-card-body li.task-list-item input[type="checkbox"] {
-  margin-right: 6px;
+.memoria-card-body ul.contains-task-list > li.task-list-item:first-child {
+  margin-top: 0;
+}
+.memoria-card-body
+  ul.contains-task-list
+  > li.task-list-item
+  > input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 1.05em;
+  height: 1.05em;
+  margin: 0.28em 0 0 !important;
   cursor: pointer;
-  vertical-align: middle;
-  transform: scale(0.95);
+  transform: none;
+  vertical-align: top;
+}
+.memoria-card-body
+  ul.contains-task-list
+  > li.task-list-item
+  > p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0 !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.memoria-card-body ul.contains-task-list > li.task-list-item::before {
+  display: none;
 }
 .memoria-card-body li.task-list-item.is-checked,
 .memoria-card-body li[data-task="x"],
@@ -4174,6 +4219,35 @@
   color: inherit;
   padding: 0 1px;
   border-radius: 2px;
+}
+
+/* v2.4.1: 引用 callout 点击后跳回原卡片；部分引用只高亮实际引用的文字。 */
+.memoria-card-body .memoria-quote-callout {
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.memoria-card-body .memoria-quote-callout:hover,
+.memoria-card-body .memoria-quote-callout:focus-visible {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px
+    color-mix(in srgb, var(--interactive-accent) 35%, transparent);
+}
+.memoria-card.memoria-quote-target {
+  scroll-margin-top: 56px;
+  outline: 2px solid
+    color-mix(in srgb, var(--interactive-accent) 72%, transparent);
+  outline-offset: 3px;
+}
+.memoria-card.memoria-quote-full {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+}
+.memoria-card-body mark.memoria-quote-highlight {
+  background: var(--text-highlight-bg, rgba(255, 208, 0, 0.45));
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
 /* 鎯呮劅鑹插僵鍙鍖栵細鍗＄墖宸﹁竟鑹叉潯

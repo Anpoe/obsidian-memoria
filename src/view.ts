@@ -183,6 +183,8 @@ export class MemoriaView extends ItemView {
   private fabEl: HTMLButtonElement | null = null;
   /** v2.0.0: 当前搜索的结构化查询，给 renderMemoCard 高亮用 */
   private currentQuery: SearchQuery = EMPTY_QUERY;
+  /** 点击引用后用于清理原卡片定位和局部高亮的计时器。 */
+  private quoteTargetTimer: number | null = null;
   /** v2.0.0: Vim 选中的卡片索引（-1 = 无选中）*/
   private vimSelectedIdx = -1;
   /** v1.4.1: 今日已提示过"满级达成"的日期（yyyy-MM-dd），避免每次刷新都弹 Notice */
@@ -288,6 +290,7 @@ export class MemoriaView extends ItemView {
       window.clearTimeout(this.editSavedExitTimer);
       this.editSavedExitTimer = null;
     }
+    this.clearQuoteTarget();
     this.restoreMobileHeader();
     this.workspaceLeafEl?.removeClass("memoria-workspace-leaf");
     this.workspaceLeafEl = null;
@@ -676,11 +679,11 @@ export class MemoriaView extends ItemView {
       setIcon(closeBtn, "x");
       closeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        // v2.3.1: 点 ✕ 是用户**主动**收起的明确意图，强制收起（force=true）。
-        //   之前误用 collapseFabInput()（force=false），导致有内容时被"草稿保护"
-        //   分支拦下只 blur 不收，表现为"有内容点 ✕ 没反应"。
-        //   草稿在输入时已实时 saveDraft，下次点 FAB 展开会 loadDraft 自动恢复，
-        //   所以强制收起不会丢内容。
+        // v2.4.1-beta.12: 编辑态的 ✕ 是“取消编辑”，必须清掉编辑草稿，
+        //   还原到进入编辑前的状态；新建态的 ✕ 才只是收起输入卡片，普通新建草稿仍保留。
+        if (this.inputMode === "edit" && this.editingMemo) {
+          this.exitEditMode();
+        }
         this.collapseFabInput(true);
       });
     }
@@ -4507,6 +4510,10 @@ export class MemoriaView extends ItemView {
           : "") +
         moodCls,
     });
+    // 给引用跳转建立稳定的 DOM 定位，不依赖卡片在列表中的序号。
+    card.dataset.memoFile = memo.file;
+    card.dataset.memoStart = String(memo.range[0]);
+    card.dataset.memoEnd = String(memo.range[1]);
     // 双击卡片进入编辑模式
     card.addEventListener("dblclick", (e) => {
       // 避免双击图片/链接时误触
@@ -4651,6 +4658,7 @@ export class MemoriaView extends ItemView {
             const first = this.mdCache.keys().next();
             if (!first.done) this.mdCache.delete(first.value);
           }
+          this.decorateQuoteCallouts(body);
         }).catch((err) => {
           console.error("[Memoria] Failed to render markdown:", err);
         });
@@ -4663,6 +4671,9 @@ export class MemoriaView extends ItemView {
       //   MarkdownRenderer.render 只生成 <a class="internal-link"> 的 DOM，
       //   不自动绑点击事件——我们得用事件委托自己把点击转给 workspace.openLinkText。
       this.bindInternalLinks(body, memo);
+      // v2.4.1: 引用卡片可点击跳回原笔记；事件委托可以覆盖异步渲染出的节点。
+      this.bindQuoteInteractions(body);
+      if (cached !== undefined) this.decorateQuoteCallouts(body);
       // v2.0.0: 搜索高亮 —— 遍历 body 里所有文本节点，把命中关键词包进 <mark>
       //   只在有搜索词时执行，无搜索词时零开销。
       //   放在 bindInternalLinks 后是因为我们不想高亮 <a> 内部（避免破坏链接）。
@@ -4858,6 +4869,360 @@ export class MemoriaView extends ItemView {
         return;
       }
     });
+  }
+
+  /**
+   * v2.4.1: 让引用 callout 可以跳回原笔记。
+   *
+   * 引用格式本身已经带有原笔记的日期和时间（`> [!quote] yyyy-MM-dd HH:mm`），
+   * 因此这里不往 Markdown 里塞额外的定位注释。老版本已经生成的引用也能直接使用。
+   */
+  private bindQuoteInteractions(body: HTMLElement): void {
+    body.addEventListener("click", (event) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+
+      const callout = target.closest<HTMLElement>(
+        '.callout[data-callout="quote"]'
+      );
+      if (!callout || !body.contains(callout)) return;
+
+      // 保留链接、任务复选框和 callout 自带的折叠按钮的原生行为。
+      if (
+        target.closest(
+          "a, button, input, textarea, select, .callout-title, .callout-fold"
+        )
+      ) {
+        return;
+      }
+
+      this.activateQuoteCallout(callout, event);
+    });
+  }
+
+  /** 给键盘用户提供和点击相同的引用跳转入口。 */
+  private decorateQuoteCallouts(body: HTMLElement): void {
+    const callouts = body.querySelectorAll<HTMLElement>(
+      '.callout[data-callout="quote"]'
+    );
+    callouts.forEach((callout) => {
+      if (!this.getQuoteDateTime(callout)) return;
+      callout.addClass("memoria-quote-callout");
+      callout.setAttr("role", "button");
+      callout.setAttr("tabindex", "0");
+      callout.setAttr("aria-label", "跳转到原笔记");
+      callout.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        this.activateQuoteCallout(callout, event);
+      });
+    });
+  }
+
+  private activateQuoteCallout(callout: HTMLElement, event: Event): void {
+    const dateTime = this.getQuoteDateTime(callout);
+    if (!dateTime) return;
+    const segments = this.extractQuoteSegments(callout);
+    const memo = this.findReferencedMemo(
+      dateTime.date,
+      dateTime.time,
+      segments
+    );
+    if (!memo) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    void this.jumpToReferencedMemo(memo, segments);
+  }
+
+  /** 从 callout 标题中读取 quoteMemo 写入的原笔记日期和时间。 */
+  private getQuoteDateTime(
+    callout: HTMLElement
+  ): { date: string; time: string } | null {
+    const title = callout.querySelector<HTMLElement>(".callout-title");
+    const text = title?.textContent ?? "";
+    const match = text.match(
+      /\b(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})(?::\d{2})?\b/
+    );
+    if (!match) return null;
+    return { date: match[1], time: match[2] };
+  }
+
+  /**
+   * 提取引用块中的可见文本片段。
+   * 列表按 li 拆分，普通段落按块拆分，这样部分引用可以逐段匹配和高亮。
+   */
+  private extractQuoteSegments(callout: HTMLElement): string[] {
+    const content = callout.querySelector<HTMLElement>(".callout-content");
+    if (!content) return [];
+
+    const segments: string[] = [];
+    const push = (value: string): void => {
+      // 卡片正文会统一剥离标签；引用侧也剥离标签，避免“正文 #标签”这一段
+      // 因为引用里多了标签而无法命中和高亮。
+      const text = this.normalizeQuoteText(this.stripTags(value).text);
+      if (text) segments.push(text);
+    };
+
+    for (const child of Array.from(content.children)) {
+      const element = child as HTMLElement;
+      if (element.tagName === "UL" || element.tagName === "OL") {
+        for (const item of Array.from(element.children)) {
+          if (item.tagName === "LI") push(item.textContent ?? "");
+        }
+      } else if (element.tagName !== "HR") {
+        push(element.textContent ?? "");
+      }
+    }
+    if (segments.length === 0) push(content.textContent ?? "");
+    return segments;
+  }
+
+  private normalizeQuoteText(value: string): string {
+    return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  /** 把 Markdown 语法压成用于定位/评分的可比较文本。 */
+  private normalizeComparableText(value: string): string {
+    return value
+      .split("\n")
+      .map((line) =>
+        line
+          .replace(/^\s*>\s?/, "")
+          .replace(/^\s*[-*+]\s+\[[ xX]\]\s*/, "")
+          .replace(/^\s*[-*+]\s+/, "")
+          .replace(/^\s*\d+[.)]\s+/, "")
+          .replace(/^\s*#{1,6}\s+/, "")
+          .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+          .replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, target: string, alias?: string) =>
+            alias || target
+          )
+          .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+          .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
+          .replace(/[*_~`]/g, "")
+      )
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLocaleLowerCase();
+  }
+
+  /** 按日期/时间找候选，再用引用正文解决同一时间的歧义。 */
+  private findReferencedMemo(
+    date: string,
+    time: string,
+    segments: string[]
+  ): Memo | null {
+    const candidates = this.store
+      .getAll()
+      .filter((memo) => memo.date === date && memo.time === time);
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1 || segments.length === 0) return candidates[0];
+
+    let best = candidates[0];
+    let bestScore = -1;
+    for (const candidate of candidates) {
+      const source = this.normalizeComparableText(candidate.content);
+      const visibleSource = this.normalizeComparableText(
+        this.stripTags(candidate.content).text
+      );
+      let score = 0;
+      for (const segment of segments) {
+        const comparable = this.normalizeComparableText(segment);
+        if (!comparable) continue;
+        if (source.includes(comparable)) score += comparable.length * 2;
+        else if (visibleSource.includes(comparable)) score += comparable.length;
+      }
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  private findRenderedMemoCard(memo: Memo): HTMLElement | null {
+    const cards = this.listEl?.querySelectorAll<HTMLElement>(".memoria-card");
+    if (!cards) return null;
+    for (const card of Array.from(cards)) {
+      if (
+        card.dataset.memoFile === memo.file &&
+        card.dataset.memoStart === String(memo.range[0]) &&
+        card.dataset.memoEnd === String(memo.range[1])
+      ) {
+        return card;
+      }
+    }
+    return null;
+  }
+
+  /** 点击新的引用前清掉上一次的卡片定位和文字 mark。 */
+  private clearQuoteTarget(): void {
+    if (this.quoteTargetTimer !== null) {
+      window.clearTimeout(this.quoteTargetTimer);
+      this.quoteTargetTimer = null;
+    }
+    const root = this.listEl;
+    if (!root) return;
+    root
+      .querySelectorAll<HTMLElement>(
+        ".memoria-card.memoria-quote-target, .memoria-card.memoria-quote-full"
+      )
+      .forEach((card) => {
+        card.removeClass("memoria-quote-target");
+        card.removeClass("memoria-quote-full");
+      });
+    root
+      .querySelectorAll<HTMLElement>("mark.memoria-quote-highlight")
+      .forEach((mark) => this.unwrapQuoteHighlight(mark));
+  }
+
+  private unwrapQuoteHighlight(mark: HTMLElement): void {
+    const parent = mark.parentNode;
+    if (!parent) return;
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+    mark.remove();
+  }
+
+  /**
+   * 让目标卡片在当前筛选/分页下可见，然后滚动并高亮引用内容。
+   * 如果当前筛选把原笔记排除了，会回到“全部笔记”再定位，避免点击后无反馈。
+   */
+  private async jumpToReferencedMemo(
+    memo: Memo,
+    segments: string[]
+  ): Promise<void> {
+    this.clearQuoteTarget();
+
+    let card = this.findRenderedMemoCard(memo);
+    if (!card) {
+      const current = this.getFilteredMemos();
+      const currentIndex = current.findIndex((candidate) => candidate === memo);
+      if (currentIndex >= 0) {
+        this.pageLimit = Math.max(this.pageLimit, currentIndex + 1);
+        this.renderList();
+      } else {
+        this.filter = {
+          tag: null,
+          year: null,
+          date: null,
+          keyword: "",
+          preset: "all",
+        };
+        this.activeSavedSearchId = null;
+        this.activeSavedSearchFilters = null;
+        if (this.searchEl) this.searchEl.value = "";
+        const all = this.store.getAll();
+        const allIndex = all.findIndex((candidate) => candidate === memo);
+        if (allIndex < 0) return;
+        this.pageLimit = Math.max(this.getInitialPageLimit(), allIndex + 1);
+        this.renderAll();
+      }
+      card = this.findRenderedMemoCard(memo);
+    }
+    if (!card) return;
+
+    card.addClass("memoria-quote-target");
+    const body = card.querySelector<HTMLElement>(".memoria-card-body");
+    body?.removeClass("is-collapsed");
+    card.scrollIntoView({ block: "center", behavior: "smooth" });
+
+    const renderedBody = await this.waitForQuoteBody(card);
+    if (!renderedBody || !card.isConnected) return;
+
+    const bodyText = this.normalizeQuoteText(renderedBody.textContent ?? "");
+    if (bodyText && this.quoteCoversWholeBody(bodyText, segments)) {
+      card.addClass("memoria-quote-full");
+    } else {
+      this.highlightQuoteSegments(renderedBody, segments);
+    }
+
+    this.quoteTargetTimer = window.setTimeout(() => {
+      this.clearQuoteTarget();
+    }, 2600);
+  }
+
+  private async waitForQuoteBody(card: HTMLElement): Promise<HTMLElement | null> {
+    for (let i = 0; i < 30; i++) {
+      const body = card.querySelector<HTMLElement>(".memoria-card-body");
+      if (body && (body.textContent?.trim() || body.querySelector("img, table, pre"))) {
+        return body;
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+    }
+    return card.querySelector<HTMLElement>(".memoria-card-body");
+  }
+
+  private quoteCoversWholeBody(bodyText: string, segments: string[]): boolean {
+    const body = this.normalizeComparableText(bodyText);
+    const quote = this.normalizeComparableText(segments.join(" "));
+    if (!body || !quote) return false;
+    if (quote.includes(body)) return true;
+    const quoteWithoutTags = this.normalizeComparableText(
+      quote.replace(/#[A-Za-z0-9_\u4e00-\u9fff/]+/g, " ")
+    );
+    return quoteWithoutTags.includes(body);
+  }
+
+  private highlightQuoteSegments(
+    body: HTMLElement,
+    segments: string[]
+  ): void {
+    this.clearQuoteHighlights(body);
+    for (const segment of segments) {
+      const needle = this.normalizeQuoteText(segment);
+      if (!needle) continue;
+      const pattern = new RegExp(
+        needle
+          .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+          .replace(/\s+/g, "\\s+"),
+        "i"
+      );
+      let wrapped = false;
+      while (!wrapped) {
+        const nodes = this.getQuoteTextNodes(body);
+        for (const node of nodes) {
+          const text = node.textContent ?? "";
+          const match = pattern.exec(text);
+          if (!match) continue;
+          const range = activeDocument.createRange();
+          range.setStart(node, match.index);
+          range.setEnd(node, match.index + match[0].length);
+          const mark = activeDocument.createElement("mark");
+          mark.className = "memoria-quote-highlight";
+          mark.appendChild(range.extractContents());
+          range.insertNode(mark);
+          wrapped = true;
+          break;
+        }
+        if (!wrapped) break;
+      }
+    }
+  }
+
+  private clearQuoteHighlights(body: HTMLElement): void {
+    body
+      .querySelectorAll<HTMLElement>("mark.memoria-quote-highlight")
+      .forEach((mark) => this.unwrapQuoteHighlight(mark));
+  }
+
+  private getQuoteTextNodes(body: HTMLElement): Text[] {
+    const nodes: Text[] = [];
+    const walker = activeDocument.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+    while (current) {
+      const node = current as Text;
+      const parent = node.parentElement;
+      if (
+        parent &&
+        !parent.closest("a, code, pre, mark, script, style") &&
+        node.textContent?.trim()
+      ) {
+        nodes.push(node);
+      }
+      current = walker.nextNode();
+    }
+    return nodes;
   }
 
   /**
