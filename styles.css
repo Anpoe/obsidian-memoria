@@ -851,11 +851,13 @@
   filter: saturate(0.55);
 }
 
-/* 编辑模式的保存按钮必须是明确的文字按钮，不使用发送图标。 */
+/* 编辑模式的保存按钮必须是明确的文字按钮，不使用发送图标；尺寸与原取消按钮一致。 */
 .memoria-root .memoria-input-card.is-editing button.memoria-submit-btn {
   width: auto;
-  min-width: 72px;
-  padding: 0 14px;
+  min-width: 0;
+  height: 32px;
+  padding: 5px 14px;
+  border-radius: 6px;
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
@@ -1882,7 +1884,7 @@
     color-mix(in srgb, var(--interactive-accent) 15%, transparent);
 }
 
-/* 右下角发送区：取消按钮 + 发送按钮 */
+/* 右下角保存区 */
 .memoria-submit-wrap {
   display: flex;
   gap: 8px;
@@ -1903,22 +1905,6 @@
   border: 0;
   opacity: 0;
   pointer-events: none;
-}
-
-.memoria-cancel-btn {
-  padding: 5px 14px;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
-  color: var(--text-muted);
-  font-size: 13px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-  box-shadow: none;
-}
-.memoria-cancel-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
 }
 
 /* 正在编辑的卡片：高亮边框 */

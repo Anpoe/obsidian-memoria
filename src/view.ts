@@ -162,7 +162,6 @@ export class MemoriaView extends ItemView {
   private buddyJustHatched = false;
   /** 当前是否处于编辑某条 memo 的模式 */
   private editingMemo: Memo | null = null;
-  private editBannerEl: HTMLElement | null = null;
   /** 编辑模式下的时间图标入口。 */
   private editTimeBtnEl: HTMLButtonElement | null = null;
   /** 编辑模式下的保存按钮（新建模式仍显示发送图标）。 */
@@ -996,14 +995,6 @@ export class MemoriaView extends ItemView {
     };
     editDateTimeInput.addEventListener("input", onEditDateTimeChange);
     editDateTimeInput.addEventListener("change", onEditDateTimeChange);
-
-    const cancelBtn = submitWrap.createEl("button", {
-      cls: "memoria-cancel-btn memoria-hidden",
-      text: t("input.cancel"),
-    });
-    cancelBtn.addEventListener("click", () => this.exitEditMode());
-    // 存起来方便 updateEditBanner 切换可见性
-    this.editBannerEl = cancelBtn;
 
     const submitBtn = submitWrap.createEl("button", {
       cls: "memoria-submit-btn",
@@ -2197,9 +2188,6 @@ export class MemoriaView extends ItemView {
     button.empty();
     button.removeClass("is-saving", "is-saved");
     button.removeAttribute("aria-busy");
-    if (this.editBannerEl instanceof HTMLButtonElement) {
-      this.editBannerEl.disabled = this.editSaveState === "saving";
-    }
 
     if (!this.editingMemo) {
       setIcon(button, "send-horizontal");
@@ -2231,12 +2219,10 @@ export class MemoriaView extends ItemView {
     button.setAttr("title", label);
   }
 
-  /** 刷新编辑模式的 UI 状态（取消/时间按钮 + 输入卡片高亮）。 */
+  /** 刷新编辑模式的 UI 状态（时间按钮 + 输入卡片高亮）。 */
   private updateEditBanner(): void {
-    if (!this.editBannerEl) return;
     const inputCard = this.inputEl.closest(".memoria-input-card");
     if (this.editingMemo) {
-      this.editBannerEl.removeClass("memoria-hidden");
       this.editTimeBtnEl?.removeClass("memoria-hidden");
       inputCard?.addClass("is-editing");
       this.inputEl.setAttr(
@@ -2247,7 +2233,6 @@ export class MemoriaView extends ItemView {
         })
       );
     } else {
-      this.editBannerEl.addClass("memoria-hidden");
       this.editTimeBtnEl?.addClass("memoria-hidden");
       inputCard?.removeClass("is-editing");
       // v2.0.13: 如果当前按某个标签筛选，placeholder 提示用户保存时会自动加该标签
