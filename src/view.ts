@@ -163,8 +163,19 @@ export class MemoriaView extends ItemView {
   /** 当前是否处于编辑某条 memo 的模式 */
   private editingMemo: Memo | null = null;
   private editBannerEl: HTMLElement | null = null;
-  /** v1.6.0: 编辑模式下的 datetime-local input（新建模式隐藏） */
+  /** 编辑模式下的时间图标入口。 */
+  private editTimeBtnEl: HTMLButtonElement | null = null;
+  /** 编辑模式下的保存按钮（新建模式仍显示发送图标）。 */
+  private editSaveBtnEl: HTMLButtonElement | null = null;
+  /** 编辑模式下的 datetime-local input，仅作为原生选择器的承载，不直接展示。 */
   private editDateTimeEl: HTMLInputElement | null = null;
+  /** 编辑草稿的延迟写入计时器，避免每次输入都触碰 localStorage。 */
+  private editDraftTimer: number | null = null;
+  /** 保存完成后让“已保存”状态保持片刻，再退出编辑模式。 */
+  private editSavedExitTimer: number | null = null;
+  private editSaveState: "idle" | "saving" | "saved" = "idle";
+  private editOriginalContent = "";
+  private editOriginalDateTime = "";
   /** v2.2.0: 移动端 FAB 浮动按钮 —— 仅在 settings.mobileInputStyle === "fab"
    *  且当前是触屏设备时才显示；点击后给 root 加 `.is-fab-expanded` 让输入卡片
    *  滑出。可视性完全由 CSS 控制（@media + class 组合），这里只持引用方便
@@ -268,6 +279,13 @@ export class MemoriaView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    // 关闭视图时把尚未到 400ms 的编辑变更也落到本地草稿，避免切换工作区丢失。
+    if (this.editingMemo) this.persistEditDraft();
+    this.clearEditDraftTimer();
+    if (this.editSavedExitTimer !== null) {
+      window.clearTimeout(this.editSavedExitTimer);
+      this.editSavedExitTimer = null;
+    }
     this.restoreMobileHeader();
     this.workspaceLeafEl?.removeClass("memoria-workspace-leaf");
     this.workspaceLeafEl = null;
@@ -822,7 +840,7 @@ export class MemoriaView extends ItemView {
     // v1.1.8: 同时做高度自适应
     // v2.0.17: 同步输入卡片的 has-content 状态（用于"默认收起、有内容保持展开"动画）
     this.inputEl.addEventListener("input", () => {
-      if (!this.editingMemo) this.saveDraft(this.inputEl.value);
+      this.queueInputDraftSave();
       this.autoResizeInput();
       this.syncInputCardContentState();
       // v2.3.3: 移除上一版的 scrollIntoView（它在 iOS 上每次打字 smooth 滚动
@@ -945,18 +963,40 @@ export class MemoriaView extends ItemView {
       this.showTablePicker(addTableBtn);
     });
 
+    // 编辑模式下把时间选择收进工具栏：点击图标打开原生日期/时间选择器，
+    // 不再在右下角占一整条输入框。
+    const editTimeBtn = toolLeft.createEl("button", {
+      cls: "memoria-tool-btn memoria-edit-time-btn memoria-hidden",
+      attr: {
+        "aria-label": t("input.editTimeTitle"),
+        title: t("input.editTimeTitle"),
+      },
+    });
+    setIcon(editTimeBtn, "clock");
+    this.editTimeBtnEl = editTimeBtn;
+    editTimeBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      this.openEditDateTimePicker();
+    });
+
     // v1.2.1: 去掉 "Ctrl+Enter · 拖拽/粘贴图片" 提示，让输入区更清爽
 
     const submitWrap = inputToolbar.createDiv({ cls: "memoria-submit-wrap" });
-    // v1.6.0: 编辑模式下可修改时间。新建模式默认隐藏，进入编辑模式时填值并显示。
-    //   用原生 datetime-local，iOS 上是滚轮选择器，PC 上是日历 + 时间双控件，
-    //   全平台体验一致且零依赖。
-    const editDateTimeInput = submitWrap.createEl("input", {
-      cls: "memoria-edit-datetime memoria-hidden",
+    // 原生 datetime-local 只作为时间图标的选择器承载，视觉上保持隐藏。
+    const editDateTimeInput = toolLeft.createEl("input", {
+      cls: "memoria-edit-datetime",
       type: "datetime-local",
       attr: { step: "60", title: t("input.editTimeTitle") },
     });
     this.editDateTimeEl = editDateTimeInput;
+    const onEditDateTimeChange = () => {
+      if (!this.editingMemo) return;
+      this.queueInputDraftSave();
+      this.updateEditSaveButton();
+    };
+    editDateTimeInput.addEventListener("input", onEditDateTimeChange);
+    editDateTimeInput.addEventListener("change", onEditDateTimeChange);
+
     const cancelBtn = submitWrap.createEl("button", {
       cls: "memoria-cancel-btn memoria-hidden",
       text: t("input.cancel"),
@@ -972,10 +1012,30 @@ export class MemoriaView extends ItemView {
         title: t("input.submit"),
       },
     });
-    setIcon(submitBtn, "send-horizontal");
+    this.editSaveBtnEl = submitBtn;
+    this.updateEditSaveButton();
     submitBtn.addEventListener("click", () => {
       void this.submitMemo();
     });
+  }
+
+  /** 打开编辑时间的原生选择器。showPicker 在 Chromium 可用，其他平台退回 click。 */
+  private openEditDateTimePicker(): void {
+    const input = this.editDateTimeEl;
+    if (!input || !this.editingMemo) return;
+    const picker = input as HTMLInputElement & {
+      showPicker?: () => void;
+    };
+    try {
+      if (typeof picker.showPicker === "function") {
+        picker.showPicker();
+      } else {
+        input.click();
+      }
+    } catch {
+      // iOS/部分旧版 WebView 可能不支持 showPicker，但仍支持 click 打开控件。
+      input.click();
+    }
   }
 
   /** 在光标处插入文本。
@@ -1000,7 +1060,7 @@ export class MemoriaView extends ItemView {
     // v1.1.8: 插入内容后也要重新算一次高度
     this.autoResizeInput();
     // v2.0.13: 同步保存草稿（之前只在主 input 监听器里保存，按钮触发的修改没保存到草稿）
-    if (!this.editingMemo) this.saveDraft(el.value);
+    this.queueInputDraftSave();
     // v2.0.17: 同步输入卡片展开/收起态
     this.syncInputCardContentState();
   }
@@ -1076,6 +1136,23 @@ export class MemoriaView extends ItemView {
     card.toggleClass("has-content", hasContent);
   }
 
+  /** 根据当前模式把输入变化送入对应的草稿机制。 */
+  private queueInputDraftSave(): void {
+    if (this.editingMemo) {
+      if (this.editSaveState === "saved") {
+        this.editSaveState = "idle";
+        if (this.editSavedExitTimer !== null) {
+          window.clearTimeout(this.editSavedExitTimer);
+          this.editSavedExitTimer = null;
+        }
+      }
+      this.scheduleEditDraftSave();
+      this.updateEditSaveButton();
+    } else {
+      this.saveDraft(this.inputEl.value);
+    }
+  }
+
 
 
   /**
@@ -1107,7 +1184,7 @@ export class MemoriaView extends ItemView {
       el.focus();
       this.autoResizeInput();
       // v1.1.7: 草稿持久化
-      if (!this.editingMemo) this.saveDraft(el.value);
+      this.queueInputDraftSave();
       return;
     }
     // 无选区：原有行为
@@ -1148,7 +1225,7 @@ export class MemoriaView extends ItemView {
       replaceTextareaRange(el, start, end, finalText);
       el.focus();
       this.autoResizeInput();
-      if (!this.editingMemo) this.saveDraft(el.value);
+      this.queueInputDraftSave();
       return;
     }
     // 无选区：原有行为
@@ -1229,7 +1306,7 @@ export class MemoriaView extends ItemView {
     const newPos = Math.max(lineStart, pos + shift2);
     el.setSelectionRange(newPos, newPos);
     // 走一次 input 路径：存草稿 + autoResize
-    if (!this.editingMemo) this.saveDraft(el.value);
+    this.queueInputDraftSave();
     this.autoResizeInput();
     return true;
   }
@@ -1313,7 +1390,7 @@ export class MemoriaView extends ItemView {
     replaceTextareaRange(el, lineStart, lineEnd, "\n");
     const newPos = lineStart + 1;
     el.setSelectionRange(newPos, newPos);
-    if (!this.editingMemo) this.saveDraft(el.value);
+    this.queueInputDraftSave();
     this.autoResizeInput();
   }
 
@@ -1590,45 +1667,81 @@ export class MemoriaView extends ItemView {
     return false;
   }
 
+  /** 把当前编辑内容真正写回日记文件。输入过程只写本地编辑草稿。 */
+  private async saveEditedMemo(): Promise<void> {
+    const memo = this.editingMemo;
+    if (!memo || this.editSaveState === "saving") return;
+    if (!this.hasEditChanges()) return;
+
+    const text = this.inputEl.value.trim();
+    if (!text) return;
+
+    const dtStr = this.editDateTimeEl?.value || this.editOriginalDateTime;
+    const timeChanged = dtStr !== this.editOriginalDateTime;
+    let newDate: Date | null = null;
+    if (timeChanged) {
+      newDate = new Date(dtStr);
+      if (isNaN(newDate.getTime())) {
+        new Notice(t("notice.invalidTime"));
+        return;
+      }
+    }
+
+    this.clearEditDraftTimer();
+    this.editSaveState = "saving";
+    this.updateEditSaveButton();
+
+    try {
+      if (newDate) {
+        await this.store.editMemoDateTime(memo, newDate, text);
+        new Notice(t("notice.updatedWithTime"));
+      } else {
+        await this.store.editMemo(memo, text);
+        new Notice(t("notice.updated"));
+      }
+
+      this.clearEditDraft(memo);
+      this.editOriginalContent = text;
+      this.editOriginalDateTime = dtStr;
+      this.editSaveState = "saved";
+      this.updateEditSaveButton();
+
+      // 给用户一个明确的完成反馈，再回到普通新建状态。
+      if (this.editSavedExitTimer !== null) {
+        window.clearTimeout(this.editSavedExitTimer);
+      }
+      this.editSavedExitTimer = window.setTimeout(() => {
+        this.editSavedExitTimer = null;
+        if (this.editSaveState === "saved") this.exitEditMode();
+      }, 900);
+    } catch (e) {
+      console.error(e);
+      this.editSaveState = "idle";
+      this.updateEditSaveButton();
+      new Notice(t("notice.saveFailed", { msg: (e as Error).message }));
+    }
+  }
+
 
   private async submitMemo(): Promise<void> {
+    if (this.editingMemo) {
+      await this.saveEditedMemo();
+      return;
+    }
+
     const text = this.inputEl.value.trim();
     if (!text) return;
     try {
-      if (this.editingMemo) {
-        // v1.6.0: 编辑模式可以同时改时间和内容。
-        //   读取 datetime-local input：值是 "yyyy-MM-ddTHH:mm" 格式，
-        //   按本地时区解析（new Date('yyyy-MM-ddTHH:mm') 在所有浏览器都按本地时区解析）。
-        const dtStr = this.editDateTimeEl?.value ?? "";
-        const origStr = `${this.editingMemo.date}T${this.editingMemo.time}`;
-        const timeChanged = dtStr && dtStr !== origStr;
-
-        if (timeChanged) {
-          const newDate = new Date(dtStr);
-          if (isNaN(newDate.getTime())) {
-            new Notice(t("notice.invalidTime"));
-            return;
-          }
-          await this.store.editMemoDateTime(this.editingMemo, newDate, text);
-          new Notice(t("notice.updatedWithTime"));
-        } else {
-          // 时间没动，走原有路径只改内容
-          await this.store.editMemo(this.editingMemo, text);
-          new Notice(t("notice.updated"));
-        }
-        this.exitEditMode();
-      } else {
-        // v2.0.13: 当侧栏点了某个标签做筛选时，新建 memo 自动追加该标签
-        //   （和 flomo / Thino 的行为一致 —— 在 #工作 视图下记录默认带 #工作）
-        //   只对 filter.tag 生效，预设视图（today/pinned 等）不动。
-        //   规则：
-        //     1. 仅当 filter.tag 不为空时触发
-        //     2. 用户已经在文本里手打了相同标签 → 不重复加
-        //     3. 标签作为新行追加在末尾，不破坏用户原排版
-        const finalText = this.appendActiveTagIfMissing(text);
-        await this.store.addMemo(finalText);
-        new Notice(t("notice.saved"));
-      }
+      // v2.0.13: 当侧栏点了某个标签做筛选时，新建 memo 自动追加该标签
+      //   （和 flomo / Thino 的行为一致 —— 在 #工作视图下记录默认带 #工作）
+      //   只对 filter.tag 生效，预设视图（today/pinned 等）不动。
+      //   规则：
+      //     1. 仅当 filter.tag 不为空时触发
+      //     2. 用户已经在文本里手打了相同标签 → 不重复加
+      //     3. 标签作为新行追加在末尾，不破坏用户原排版
+      const finalText = this.appendActiveTagIfMissing(text);
+      await this.store.addMemo(finalText);
+      new Notice(t("notice.saved"));
       // v1.1.14: 接入 settings.clearAfterSave（之前无条件清空，设置项形同虚设）
       //   编辑模式下 exitEditMode() 已经把 inputEl 恢复为草稿，此处不再强清；
       //   新建模式按用户设置决定。
@@ -1694,6 +1807,92 @@ export class MemoriaView extends ItemView {
     // 追加到末尾，前面补换行让标签独占一行（视觉清爽）
     const sep = text.endsWith("\n") ? "" : "\n";
     return `${text}${sep}#${activeTag}`;
+  }
+
+  /** 编辑草稿按 vault + 文件 + 原始位置隔离，避免不同笔记互相覆盖。 */
+  private editDraftKey(memo: Memo): string {
+    try {
+      const identity = [
+        this.app.vault.getName(),
+        memo.file,
+        memo.date,
+        memo.time,
+        memo.range[0].toString(),
+      ].join("|");
+      return `memoria:edit-draft:${encodeURIComponent(identity)}`;
+    } catch {
+      return `memoria:edit-draft:${encodeURIComponent(
+        `${memo.file}|${memo.date}|${memo.time}|${memo.range[0]}`
+      )}`;
+    }
+  }
+
+  private loadEditDraft(
+    memo: Memo
+  ): { content: string; datetime: string } | null {
+    try {
+      const raw = window.localStorage.getItem(this.editDraftKey(memo));
+      if (!raw) return null;
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      const value = parsed as {
+        content?: unknown;
+        datetime?: unknown;
+      };
+      if (typeof value.content !== "string") return null;
+      return {
+        content: value.content,
+        datetime:
+          typeof value.datetime === "string" && value.datetime
+            ? value.datetime
+            : `${memo.date}T${memo.time}`,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 只在用户停止输入约 400ms 后保存编辑草稿，不触碰 Markdown 文件。 */
+  private scheduleEditDraftSave(): void {
+    if (!this.editingMemo) return;
+    this.clearEditDraftTimer();
+    this.editDraftTimer = window.setTimeout(() => {
+      this.editDraftTimer = null;
+      this.persistEditDraft();
+    }, 400);
+  }
+
+  private clearEditDraftTimer(): void {
+    if (this.editDraftTimer !== null) {
+      window.clearTimeout(this.editDraftTimer);
+      this.editDraftTimer = null;
+    }
+  }
+
+  private persistEditDraft(): void {
+    const memo = this.editingMemo;
+    if (!memo) return;
+    try {
+      const content = this.inputEl.value;
+      if (content.length > 512 * 1024) return;
+      const datetime =
+        this.editDateTimeEl?.value || this.editOriginalDateTime;
+      window.localStorage.setItem(
+        this.editDraftKey(memo),
+        JSON.stringify({ content, datetime })
+      );
+    } catch {
+      /* localStorage 可能被禁用，忽略 */
+    }
+  }
+
+  private clearEditDraft(memo: Memo | null): void {
+    if (!memo) return;
+    try {
+      window.localStorage.removeItem(this.editDraftKey(memo));
+    } catch {
+      /* ignore */
+    }
   }
 
   /** v1.1.7: 草稿持久化（localStorage）
@@ -1910,14 +2109,29 @@ export class MemoriaView extends ItemView {
    *  v1.6.0: 同步把 memo 的时间填入 datetime-local 输入框，允许编辑时一并修改
    */
   private enterEditMode(memo: Memo): void {
-    // 进入编辑前，把当前未发送草稿存起来（如果有）
-    if (this.inputEl.value.trim()) this.saveDraft(this.inputEl.value);
-    this.editingMemo = memo;
-    this.inputEl.value = memo.content;
-    // v1.6.0: 把 memo 时间填进 datetime input（格式 yyyy-MM-ddTHH:mm，本地时区）
-    if (this.editDateTimeEl) {
-      this.editDateTimeEl.value = `${memo.date}T${memo.time}`;
+    // 进入编辑前，把当前未发送的新建草稿存起来（如果有）。
+    // 如果已经在编辑另一条，则先把那条的最新内容保存在编辑草稿里。
+    if (this.editingMemo) {
+      this.persistEditDraft();
+    } else if (this.inputEl.value.trim()) {
+      this.saveDraft(this.inputEl.value);
     }
+    this.clearEditDraftTimer();
+    if (this.editSavedExitTimer !== null) {
+      window.clearTimeout(this.editSavedExitTimer);
+      this.editSavedExitTimer = null;
+    }
+    this.editingMemo = memo;
+    this.editOriginalContent = memo.content;
+    this.editOriginalDateTime = `${memo.date}T${memo.time}`;
+    const editDraft = this.loadEditDraft(memo);
+    this.inputEl.value = editDraft?.content ?? memo.content;
+    // 把 memo 时间填进原生 datetime input（格式 yyyy-MM-ddTHH:mm，本地时区）。
+    if (this.editDateTimeEl) {
+      this.editDateTimeEl.value =
+        editDraft?.datetime || this.editOriginalDateTime;
+    }
+    this.editSaveState = "idle";
     // v2.2.0: 移动端 FAB 模式下，编辑某条卡片时输入框可能是隐藏的，先展开
     if (this.settings.mobileInputStyle === "fab") {
       this.contentEl.addClass("is-fab-expanded");
@@ -1936,7 +2150,17 @@ export class MemoriaView extends ItemView {
    *  v1.6.0: 清空 datetime input
    */
   private exitEditMode(): void {
+    const memo = this.editingMemo;
+    this.clearEditDraftTimer();
+    if (memo) this.clearEditDraft(memo);
+    if (this.editSavedExitTimer !== null) {
+      window.clearTimeout(this.editSavedExitTimer);
+      this.editSavedExitTimer = null;
+    }
     this.editingMemo = null;
+    this.editOriginalContent = "";
+    this.editOriginalDateTime = "";
+    this.editSaveState = "idle";
     this.inputEl.value = this.loadDraft();
     if (this.editDateTimeEl) this.editDateTimeEl.value = "";
     this.updateEditBanner();
@@ -1953,15 +2177,67 @@ export class MemoriaView extends ItemView {
     }
   }
 
-  /** 刷新编辑模式的 UI 状态（取消按钮显隐 + 输入卡片的编辑态高亮）
-   *  v1.6.0: 同步控制 datetime-local 输入框的显隐
-   */
+  /** 是否存在可以写回 Markdown 的有效编辑变更。 */
+  private hasEditChanges(): boolean {
+    if (!this.editingMemo) return false;
+    const content = this.inputEl.value.trim();
+    if (!content) return false;
+    const datetime = this.editDateTimeEl?.value || this.editOriginalDateTime;
+    return (
+      content !== this.editOriginalContent ||
+      datetime !== this.editOriginalDateTime
+    );
+  }
+
+  /** 编辑态使用文字按钮；新建态恢复发送图标。 */
+  private updateEditSaveButton(): void {
+    const button = this.editSaveBtnEl;
+    if (!button) return;
+
+    button.empty();
+    button.removeClass("is-saving", "is-saved");
+    button.removeAttribute("aria-busy");
+    if (this.editBannerEl instanceof HTMLButtonElement) {
+      this.editBannerEl.disabled = this.editSaveState === "saving";
+    }
+
+    if (!this.editingMemo) {
+      setIcon(button, "send-horizontal");
+      button.disabled = false;
+      this.inputEl.readOnly = false;
+      if (this.editTimeBtnEl) this.editTimeBtnEl.disabled = false;
+      button.setAttr("aria-label", t("input.submit"));
+      button.setAttr("title", t("input.submit"));
+      return;
+    }
+
+    let label = t("input.save");
+    if (this.editSaveState === "saving") {
+      label = t("input.saving");
+      button.addClass("is-saving");
+      button.setAttr("aria-busy", "true");
+    } else if (this.editSaveState === "saved") {
+      label = t("input.saved");
+      button.addClass("is-saved");
+    }
+    button.setText(label);
+    button.disabled =
+      this.editSaveState !== "idle" || !this.hasEditChanges();
+    this.inputEl.readOnly = this.editSaveState !== "idle";
+    if (this.editTimeBtnEl) {
+      this.editTimeBtnEl.disabled = this.editSaveState !== "idle";
+    }
+    button.setAttr("aria-label", label);
+    button.setAttr("title", label);
+  }
+
+  /** 刷新编辑模式的 UI 状态（取消/时间按钮 + 输入卡片高亮）。 */
   private updateEditBanner(): void {
     if (!this.editBannerEl) return;
     const inputCard = this.inputEl.closest(".memoria-input-card");
     if (this.editingMemo) {
       this.editBannerEl.removeClass("memoria-hidden");
-      this.editDateTimeEl?.removeClass("memoria-hidden");
+      this.editTimeBtnEl?.removeClass("memoria-hidden");
       inputCard?.addClass("is-editing");
       this.inputEl.setAttr(
         "placeholder",
@@ -1972,7 +2248,7 @@ export class MemoriaView extends ItemView {
       );
     } else {
       this.editBannerEl.addClass("memoria-hidden");
-      this.editDateTimeEl?.addClass("memoria-hidden");
+      this.editTimeBtnEl?.addClass("memoria-hidden");
       inputCard?.removeClass("is-editing");
       // v2.0.13: 如果当前按某个标签筛选，placeholder 提示用户保存时会自动加该标签
       if (this.filter.tag) {
@@ -1984,6 +2260,7 @@ export class MemoriaView extends ItemView {
         this.inputEl.setAttr("placeholder", t("input.placeholder"));
       }
     }
+    this.updateEditSaveButton();
   }
 
   // ====================== 渲染 ======================

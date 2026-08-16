@@ -105,6 +105,9 @@ const zhCN: Dict = {
   "input.placeholderWithTag": "此刻，你在想什么？（会自动加 #{tag}）",
   "input.editPlaceholder": "编辑 {date} {time} 的笔记（Esc 取消）",
   "input.submit": "发送",
+  "input.save": "保存",
+  "input.saving": "保存中…",
+  "input.saved": "已保存",
   "input.cancel": "取消",
   "input.editTimeTitle": "修改这条笔记的时间（年/月/日 时:分）",
 
@@ -719,6 +722,9 @@ const enUS: Dict = {
   "input.placeholderWithTag": "What's on your mind? (will auto-add #{tag})",
   "input.editPlaceholder": "Editing memo from {date} {time} (Esc to cancel)",
   "input.submit": "Send",
+  "input.save": "Save",
+  "input.saving": "Saving…",
+  "input.saved": "Saved",
   "input.cancel": "Cancel",
   "input.editTimeTitle": "Change this memo's date & time",
 

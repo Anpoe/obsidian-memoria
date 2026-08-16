@@ -845,6 +845,38 @@
   /* 有些主题没定义 --interactive-accent-hover，fallback 用 filter 做微变亮 */
   filter: brightness(1.05);
 }
+.memoria-root button.memoria-submit-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+  filter: saturate(0.55);
+}
+
+/* 编辑模式的保存按钮必须是明确的文字按钮，不使用发送图标。 */
+.memoria-root .memoria-input-card.is-editing button.memoria-submit-btn {
+  width: auto;
+  min-width: 72px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.memoria-root .memoria-input-card.is-editing button.memoria-submit-btn.is-saving {
+  cursor: progress;
+}
+.memoria-root .memoria-input-card.is-editing button.memoria-submit-btn.is-saving::after {
+  content: "";
+  width: 11px;
+  height: 11px;
+  margin-left: 6px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: memoria-spin 0.8s linear infinite;
+}
+.memoria-root .memoria-input-card.is-editing button.memoria-submit-btn.is-saved {
+  background: var(--background-secondary) !important;
+  color: var(--text-normal) !important;
+}
 
 /* ================== 列表 ================== */
 .memoria-list {
@@ -1857,29 +1889,20 @@
   align-items: center;
 }
 
-/* v1.6.0: 编辑模式的时间选择器
- *   只有进入编辑模式才显示。原生 datetime-local：
- *   - PC 端 Chromium：日历弹窗 + 时间选择
- *   - iOS Safari：滚轮选择器（体验非常好）
- *   - Android Chrome：material datetime picker
- *   保持视觉风格与 cancel-btn 一致：低调灰边框，hover 加深。
- */
+/* 编辑模式的时间选择器：只保留工具栏里的时钟图标，原生 input 仅负责
+ * 调起系统日期/时间选择器，不占用右下角布局。 */
 .memoria-edit-datetime {
-  padding: 4px 8px;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
-  color: var(--text-muted);
-  font-size: 12px;
-  font-family: var(--font-text);
-  border-radius: 6px;
-  outline: none;
-  cursor: pointer;
-  transition: border-color 0.12s, color 0.12s;
-}
-.memoria-edit-datetime:hover,
-.memoria-edit-datetime:focus {
-  border-color: var(--interactive-accent);
-  color: var(--text-normal);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .memoria-cancel-btn {
@@ -1896,42 +1919,6 @@
 .memoria-cancel-btn:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
-}
-
-/* v2.0.8: 移动端编辑模式下，datetime-local 输入框在窄屏会挤占"取消/发送"按钮
- *   的位置，导致按钮被遮挡或挤出视口。把 datetime-input 换行到上方一行，
- *   按钮独占第二行右对齐，手机端两个按钮稳定可见。桌面端保持原样单行布局。
- *
- * v2.0.12: v2.0.9~2.0.11 尝试让 datetime 与下方工具列左对齐（视觉更工整），但
- *   iOS Safari 对 input[type="datetime-local"] 有 3 个联合 quirk
- *   （-webkit-appearance / flex min-width: auto / 默认 margin），即便都规避后
- *   真机表现仍不稳定。**改回 v2.0.8 的简单方案**：datetime 在 submit-wrap 内
- *   按其自然宽度贴右排列（iOS 默认行为），上下两行布局清晰，按钮永远可见。
- *   视觉上不与左侧工具列左对齐，但稳定、跨平台一致、零 quirk。
- *
- * v2.1.3: 阈值 680px → 900px。
- *   原 680px 阈值只覆盖手机（iPhone 横屏 ~926px 也不在内、iPad 纵屏 ~820px
- *   完全不在内）。用户反馈 iPad 纵屏发布时间编辑框会挡住发送按钮 —— 因为
- *   iPad 纵屏 CSS 视口约 810-834px，超过 680 走的是桌面单行布局，而 iOS
- *   的 datetime-local 控件在窄屏上特别宽，单行塞不下"datetime + 取消 + 发送"
- *   三件套。提到 900px 后，iPad 纵屏走换行布局，发送按钮稳定可见；iPad 横屏
- *   （~1180px）和桌面继续走单行布局。
- */
-@media (max-width: 900px) {
-  .memoria-submit-wrap {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    row-gap: 8px;
-  }
-  .memoria-edit-datetime:not(.memoria-hidden) {
-    /* 编辑态下整体换行到 submit-wrap 第一行（按钮在第二行）
-     *   不强求 width: 100%，让 iOS 按内容宽度自然渲染（贴右） */
-    flex-basis: 100%;
-    order: -1;
-    padding: 6px 10px;
-    font-size: 13px;
-    min-height: 32px;
-  }
 }
 
 /* 正在编辑的卡片：高亮边框 */
