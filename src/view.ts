@@ -167,6 +167,8 @@ export class MemoriaView extends ItemView {
   private editTimeBtnEl: HTMLButtonElement | null = null;
   /** 编辑模式下的保存按钮（新建模式仍显示发送图标）。 */
   private editSaveBtnEl: HTMLButtonElement | null = null;
+  /** 编辑模式下的取消按钮；移动端由输入卡片右上角的 X 承担同一职责。 */
+  private editCancelBtnEl: HTMLButtonElement | null = null;
   /** 编辑模式下的 datetime-local input，仅作为原生选择器的承载，不直接展示。 */
   private editDateTimeEl: HTMLInputElement | null = null;
   /** 编辑草稿的延迟写入计时器，避免每次输入都触碰 localStorage。 */
@@ -1046,6 +1048,21 @@ export class MemoriaView extends ItemView {
     };
     editDateTimeInput.addEventListener("input", onEditDateTimeChange);
     editDateTimeInput.addEventListener("change", onEditDateTimeChange);
+
+    const cancelBtn = submitWrap.createEl("button", {
+      cls: "memoria-edit-cancel memoria-hidden",
+      text: t("input.cancel"),
+      attr: {
+        "aria-label": t("input.cancel"),
+        title: t("input.cancel"),
+      },
+    });
+    this.editCancelBtnEl = cancelBtn;
+    cancelBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.exitEditMode();
+    });
 
     const submitBtn = submitWrap.createEl("button", {
       cls: "memoria-submit-btn",
@@ -2240,11 +2257,17 @@ export class MemoriaView extends ItemView {
     const button = this.editSaveBtnEl;
     if (!button) return;
 
+    const isEditing = this.inputMode === "edit" && !!this.editingMemo;
+    if (this.editCancelBtnEl) {
+      this.editCancelBtnEl.disabled =
+        !isEditing || this.editSaveState !== "idle";
+    }
+
     button.empty();
     button.removeClass("is-saving", "is-saved");
     button.removeAttribute("aria-busy");
 
-    if (this.inputMode !== "edit" || !this.editingMemo) {
+    if (!isEditing) {
       setIcon(button, "send-horizontal");
       button.disabled = false;
       this.inputEl.readOnly = false;
@@ -2277,14 +2300,17 @@ export class MemoriaView extends ItemView {
   /** 刷新编辑模式的 UI 状态（时间按钮 + 输入卡片高亮）。 */
   private updateEditBanner(): void {
     const inputCard = this.inputEl.closest(".memoria-input-card");
-    if (this.inputMode === "edit" && this.editingMemo) {
+    const editingMemo = this.editingMemo;
+    const isEditing = this.inputMode === "edit" && !!editingMemo;
+    this.editCancelBtnEl?.toggleClass("memoria-hidden", !isEditing);
+    if (isEditing && editingMemo) {
       this.editTimeBtnEl?.removeClass("memoria-hidden");
       inputCard?.addClass("is-editing");
       this.inputEl.setAttr(
         "placeholder",
         t("input.editPlaceholder", {
-          date: this.editingMemo.date,
-          time: this.editingMemo.time,
+          date: editingMemo.date,
+          time: editingMemo.time,
         })
       );
     } else {

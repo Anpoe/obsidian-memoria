@@ -880,6 +880,30 @@
   color: var(--text-normal) !important;
 }
 
+/* 桌面编辑时保留明确的“取消”文字按钮，与保存按钮使用同一规格。 */
+.memoria-root button.memoria-edit-cancel {
+  height: 32px;
+  padding: 5px 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.memoria-root button.memoria-edit-cancel:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--background-modifier-border-hover);
+}
+.memoria-root button.memoria-edit-cancel:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 /* ================== 列表 ================== */
 .memoria-list {
   flex: 1;
@@ -4859,6 +4883,11 @@
 }
 
 @media (hover: none) and (pointer: coarse), (max-width: 680px) {
+  /* 移动端使用输入卡片右上角的 X 取消编辑，不重复显示桌面按钮。 */
+  .memoria-root button.memoria-edit-cancel {
+    display: none !important;
+  }
+
   /* ============= FAB 按钮（仅 fab 模式 + 未展开时显示） ============= */
   .memoria-root.memoria-input-fab-mode .memoria-fab {
     display: flex;
