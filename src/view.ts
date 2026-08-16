@@ -4685,12 +4685,18 @@ export class MemoriaView extends ItemView {
             if (!first.done) this.mdCache.delete(first.value);
           }
           this.decorateQuoteCallouts(body);
+          // MarkdownRenderer 是异步的，复选框要等节点真正生成后再绑定。
+          // 否则首次渲染时 body 还是空的，待办只能视觉切换，无法写回原 Markdown。
+          this.bindTaskCheckboxes(body, memo, textForMd);
         }).catch((err) => {
           console.error("[Memoria] Failed to render markdown:", err);
         });
       }
-      // 给任务列表复选框接入点击 → 修改原 md
-      this.bindTaskCheckboxes(body, memo, textForMd);
+      // 缓存命中时节点已经同步插入，可以立即绑定；缓存未命中时由上面的
+      // MarkdownRenderer.then() 在渲染完成后绑定。
+      if (cached !== undefined) {
+        this.bindTaskCheckboxes(body, memo, textForMd);
+      }
       // 给表格外层加可横向滚动容器，避免宽表格撑破卡片
       this.wrapWideTables(body);
       // v1.4.17: 给 [[双链]] 和外链接入点击跳转。
@@ -4786,25 +4792,36 @@ export class MemoriaView extends ItemView {
       box.addClass("memoria-clickable");
       box.addEventListener("click", (e) => {
         void (async () => {
-        e.stopPropagation();
-        const lineNum = taskLineNums[i];
-        const lines = memo.content.split("\n");
-        const original = lines[lineNum];
-        const m = original.match(taskRe);
-        if (!m) return;
-        const checked = /[xX]/.test(m[2]);
-        // 只替换这一行的 [ ] / [x]，不影响内容其他部分
-        lines[lineNum] = original.replace(
-          taskRe,
-          checked ? "$1 $3" : "$1x$3"
-        );
-        const newContent = lines.join("\n");
-        try {
-          await this.store.editMemo(memo, newContent);
-        } catch (err) {
-          console.error("[Memoria] 任务勾选失败:", err);
-          new Notice(t("notice.checkFailed", { msg: (err as Error).message }));
-        }
+          e.stopPropagation();
+          const lineNum = taskLineNums[i];
+          const lines = memo.content.split("\n");
+          const original = lines[lineNum];
+          if (!original) return;
+          const m = original.match(taskRe);
+          if (!m) return;
+
+          // click 事件触发时，原生 checkbox 已经切换到新状态；不要再依赖
+          // 可能已经过期的 memo.content 推断状态。
+          const checked = box.checked;
+          // 只替换这一行的 [ ] / [x]，不影响内容其他部分
+          lines[lineNum] = original.replace(
+            taskRe,
+            checked ? "$1x$3" : "$1 $3"
+          );
+          const newContent = lines.join("\n");
+          box.disabled = true;
+          try {
+            await this.store.editMemo(memo, newContent);
+            // 先更新当前对象，避免文件 reload 完成前进入编辑时仍读到旧状态。
+            memo.content = newContent;
+          } catch (err) {
+            // 写回失败时恢复视觉状态，避免界面与原文产生假同步。
+            box.checked = !checked;
+            console.error("[Memoria] 任务勾选失败:", err);
+            new Notice(t("notice.checkFailed", { msg: (err as Error).message }));
+          } finally {
+            box.disabled = false;
+          }
         })();
       });
     });
