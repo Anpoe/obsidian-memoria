@@ -1,10 +1,15 @@
 // ================= 标签联想下拉框 =================
 // 监听 textarea 输入，当光标处于 #xxx 这种"未闭合标签"时弹出建议
-// 数据来源：Obsidian 整个 Vault 的 metadataCache（含所有笔记的标签）
-//          + 当前 Memoria 的标签（已包含在内）
+// 数据来源：当前 Memoria 数据集中的标签。
+// 不读取 metadataCache，避免把 Vault 里其他文件的全局标签带进来。
 
-import { App, getAllTags, setIcon } from "obsidian";
+import { setIcon } from "obsidian";
 import { replaceTextareaRange } from "./textarea-utils";
+
+export interface TagSuggestion {
+  name: string;
+  count: number;
+}
 
 export class TagSuggest {
   private dropdown: HTMLElement | null = null;
@@ -12,45 +17,36 @@ export class TagSuggest {
   private active = 0;
   private rangeStart = 0; // 触发位置（# 字符所在的索引）
 
-  /** v1.4.11: 标签全扫缓存。
-   *   原实现：每按一个键 → 遍历 vault 所有 md → metadataCache.getFileCache → getAllTags。
-   *   vault 有 3000+ md 时每次打字都能感觉到输入延迟。
-   *   现在：30 秒 TTL 缓存，期间按键直接复用；另外订阅 metadataCache "changed" 事件
-   *   让缓存失效，保证新增标签可以在下次打字时看到。 */
-  private cachedTags: { name: string; count: number }[] | null = null;
-  private cacheTime = 0;
-  private static CACHE_TTL_MS = 30_000;
-  private metaChangeRef: { unref: () => void } | null = null;
+  private blurTimer: number | null = null;
+  private viewport: VisualViewport | null = null;
 
-  constructor(private app: App, private textarea: HTMLTextAreaElement) {
+  constructor(
+    private textarea: HTMLTextAreaElement,
+    private getTagSuggestions: () => TagSuggestion[]
+  ) {
     this.textarea.addEventListener("input", this.handleInput);
     this.textarea.addEventListener("keydown", this.handleKeydown, true);
     this.textarea.addEventListener("blur", this.handleBlur);
-    this.textarea.addEventListener("scroll", () => this.close());
-    // v1.4.11: 监听 metadataCache 变化让缓存失效。
-    //   用 app.metadataCache.on("changed", cb) 返回的 ref，在 destroy 时 offref。
-    const ref = this.app.metadataCache.on("changed", () => {
-      this.cachedTags = null;
-    });
-    this.metaChangeRef = {
-      unref: () => this.app.metadataCache.offref(ref),
-    };
+    this.textarea.addEventListener("focus", this.handleFocus);
+    this.textarea.addEventListener("scroll", this.handleScroll);
   }
 
   destroy(): void {
     this.textarea.removeEventListener("input", this.handleInput);
     this.textarea.removeEventListener("keydown", this.handleKeydown, true);
     this.textarea.removeEventListener("blur", this.handleBlur);
-    if (this.metaChangeRef) {
-      this.metaChangeRef.unref();
-      this.metaChangeRef = null;
-    }
+    this.textarea.removeEventListener("focus", this.handleFocus);
+    this.textarea.removeEventListener("scroll", this.handleScroll);
+    this.clearBlurTimer();
     this.close();
   }
 
   // -------- 事件 --------
 
   private handleInput = (): void => {
+    // 工具栏按钮可能先让 textarea blur，再由 insertAtCursor() 重新 focus。
+    // 输入事件已经证明编辑器重新活跃，取消旧的延迟关闭，避免建议框闪退。
+    this.clearBlurTimer();
     const trigger = this.detectTrigger();
     if (!trigger) {
       this.close();
@@ -68,8 +64,28 @@ export class TagSuggest {
   };
 
   private handleBlur = (): void => {
-    // 延迟，给 mousedown 一个机会触发选择
-    window.setTimeout(() => this.close(), 150);
+    this.clearBlurTimer();
+    // 延迟给下拉项的 mousedown/click 一个机会触发选择。
+    // 如果 textarea 很快重新获得焦点，handleFocus 会把这个定时器取消掉。
+    this.blurTimer = window.setTimeout(() => {
+      this.blurTimer = null;
+      this.close();
+    }, 220);
+  };
+
+  private handleFocus = (): void => {
+    this.clearBlurTimer();
+  };
+
+  private handleScroll = (): void => {
+    this.close();
+  };
+
+  private clearBlurTimer(): void {
+    if (this.blurTimer !== null) {
+      window.clearTimeout(this.blurTimer);
+      this.blurTimer = null;
+    }
   };
 
   private handleKeydown = (e: KeyboardEvent): void => {
@@ -136,35 +152,13 @@ export class TagSuggest {
 
   // -------- 数据 --------
 
-  /** 收集 Vault 里所有标签，按使用频率排序
-   *  v1.4.11: 30 秒 TTL 缓存 + metadataCache changed 事件失效。 */
-  private collectAllTags(): { name: string; count: number }[] {
-    if (
-      this.cachedTags &&
-      Date.now() - this.cacheTime < TagSuggest.CACHE_TTL_MS
-    ) {
-      return this.cachedTags;
-    }
-    const counter = new Map<string, number>();
-    const cache = this.app.metadataCache;
-    const files = this.app.vault.getMarkdownFiles();
-    for (const f of files) {
-      const meta = cache.getFileCache(f);
-      if (!meta) continue;
-      const tags = getAllTags(meta) ?? [];
-      for (const tag of tags) {
-        // tag 形如 "#知识/学习"，去掉前面的 #
-        const name = tag.replace(/^#/, "");
-        if (!name) continue;
-        counter.set(name, (counter.get(name) ?? 0) + 1);
-      }
-    }
-    const result = [...counter.entries()]
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count);
-    this.cachedTags = result;
-    this.cacheTime = Date.now();
-    return result;
+  /** 收集当前 Memoria 数据集里的标签，按使用频率排序。 */
+  private collectAllTags(): TagSuggestion[] {
+    // 每次输入都从 store 的快照重新读取，保证刚保存/刚编辑的标签立即可见，
+    // 同时从根上避免引入 Vault 其他文件里的全局标签。
+    return this.getTagSuggestions()
+      .slice()
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }
 
   /** 模糊匹配：优先前缀，其次包含 */
@@ -200,6 +194,7 @@ export class TagSuggest {
       this.dropdown = activeDocument.body.createDiv({ cls: "memoria-tag-suggest" });
       // 阻止点击下拉框时 textarea 的 blur 抢先关闭
       this.dropdown.addEventListener("mousedown", (e) => e.preventDefault());
+      this.attachViewportListeners();
     }
     this.dropdown.empty();
     this.items.forEach((name, i) => {
@@ -210,6 +205,15 @@ export class TagSuggest {
       const icon = item.createSpan({ cls: "memoria-tag-suggest-icon" });
       setIcon(icon, "hash");
       item.createSpan({ cls: "memoria-tag-suggest-name", text: name });
+      // 移动端有时不会先派发可阻止 blur 的 mousedown；触摸按下时直接应用，
+      // 避免输入法弹起后下拉框被系统键盘抢走，随后 click 才到达的竞态。
+      item.addEventListener("pointerdown", (event) => {
+        if (event.pointerType !== "touch") return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.active = i;
+        this.applySelected();
+      });
       item.addEventListener("click", () => {
         this.active = i;
         this.applySelected();
@@ -231,16 +235,66 @@ export class TagSuggest {
     }
   }
 
-  /** 把下拉定位到 textarea 当前光标下方 */
+  private attachViewportListeners(): void {
+    const viewport = window.visualViewport;
+    if (!viewport || this.viewport === viewport) return;
+    this.viewport = viewport;
+    viewport.addEventListener("resize", this.handleViewportChange);
+    viewport.addEventListener("scroll", this.handleViewportChange);
+  }
+
+  private detachViewportListeners(): void {
+    if (!this.viewport) return;
+    this.viewport.removeEventListener("resize", this.handleViewportChange);
+    this.viewport.removeEventListener("scroll", this.handleViewportChange);
+    this.viewport = null;
+  }
+
+  private handleViewportChange = (): void => {
+    this.position();
+  };
+
+  /** 把下拉定位到 textarea 附近，并避开移动端输入法占用的可视区域 */
   private position(): void {
     if (!this.dropdown) return;
     const rect = this.textarea.getBoundingClientRect();
-    // 简化：定位到 textarea 左下，避免计算光标坐标
-    const top = rect.bottom + 4;
-    const left = rect.left + 4;
+    const viewport = window.visualViewport;
+    const viewportTop = viewport?.offsetTop ?? 0;
+    const viewportLeft = viewport?.offsetLeft ?? 0;
+    const viewportWidth = viewport?.width ?? window.innerWidth;
+    const viewportHeight = viewport?.height ?? window.innerHeight;
+    const viewportBottom = viewportTop + viewportHeight;
+    const viewportRight = viewportLeft + viewportWidth;
+    const margin = 8;
+    const estimatedHeight = Math.min(280, Math.max(48, this.items.length * 34 + 8));
+    const spaceBelow = Math.max(0, viewportBottom - rect.bottom - margin);
+    const spaceAbove = Math.max(0, rect.top - viewportTop - margin);
+    const showAbove = spaceBelow < estimatedHeight && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(
+      48,
+      Math.min(280, showAbove ? spaceAbove : Math.max(spaceBelow, 48))
+    );
+    this.dropdown.style.maxHeight = `${maxHeight}px`;
+
+    const actualHeight = Math.min(
+      this.dropdown.scrollHeight || estimatedHeight,
+      maxHeight
+    );
+    const preferredTop = showAbove
+      ? rect.top - actualHeight - 4
+      : rect.bottom + 4;
+    const minTop = viewportTop + margin;
+    const maxTop = Math.max(minTop, viewportBottom - actualHeight - margin);
+    const top = Math.max(minTop, Math.min(preferredTop, maxTop));
+    const width = Math.min(rect.width, 280, Math.max(160, viewportWidth - margin * 2));
+    const preferredLeft = rect.left + 4;
+    const minLeft = viewportLeft + margin;
+    const maxLeft = Math.max(minLeft, viewportRight - width - margin);
+    const left = Math.max(minLeft, Math.min(preferredLeft, maxLeft));
     this.dropdown.style.top = `${top}px`;
     this.dropdown.style.left = `${left}px`;
-    this.dropdown.style.minWidth = `${Math.min(rect.width, 280)}px`;
+    this.dropdown.style.minWidth = `${width}px`;
+    this.dropdown.style.maxWidth = `${Math.max(160, viewportWidth - margin * 2)}px`;
   }
 
   private applySelected(): void {
@@ -256,6 +310,8 @@ export class TagSuggest {
   }
 
   private close(): void {
+    this.clearBlurTimer();
+    this.detachViewportListeners();
     if (this.dropdown) {
       this.dropdown.remove();
       this.dropdown = null;

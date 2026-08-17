@@ -29,7 +29,7 @@ import {
   VIEW_TYPE_MEMORIA_YEAR,
 } from "./types";
 import { MemoStore } from "./store";
-import { TagSuggest } from "./tag-suggest";
+import { TagSuggest, TagSuggestion } from "./tag-suggest";
 import { extractImages, renderImageGrid, openLightbox } from "./image-grid";
 import { renderCalendar } from "./calendar";
 import { parseSearchQuery, matchesQuery, SearchQuery, EMPTY_QUERY } from "./search";
@@ -845,7 +845,10 @@ export class MemoriaView extends ItemView {
       inputCard.removeClass("is-focused");
     });
     // 标签联想
-    this.tagSuggest = new TagSuggest(this.app, this.inputEl);
+    this.tagSuggest = new TagSuggest(
+      this.inputEl,
+      () => this.getMemoriaTagSuggestions()
+    );
     this.inputEl.addEventListener("keydown", (e) => {
       // v2.0.16: 发送快捷键按 sendHotkey 配置决定，含 IME 保护。
       //   前面 contentEl 的 capture 监听已经响应过了；这里是 bubble 阶段兜底
@@ -1885,6 +1888,20 @@ export class MemoriaView extends ItemView {
     // 追加到末尾，前面补换行让标签独占一行（视觉清爽）
     const sep = text.endsWith("\n") ? "" : "\n";
     return `${text}${sep}#${activeTag}`;
+  }
+
+  /** 标签联想只展示当前 Memoria 数据集中的标签，不读取 Vault 全局标签。 */
+  private getMemoriaTagSuggestions(): TagSuggestion[] {
+    const counts = new Map<string, number>();
+    for (const memo of this.store.getAll()) {
+      for (const tag of memo.tags) {
+        if (RESERVED_TAGS.has(tag)) continue;
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }
 
   /** 编辑草稿按 vault + 文件 + 原始位置隔离，避免不同笔记互相覆盖。 */
@@ -4768,7 +4785,9 @@ export class MemoriaView extends ItemView {
     // v1.1.15: 过滤掉 code fence 内的 "- [ ]" —— 之前这些示例任务行会混进 taskLineNums，
     //   而 MarkdownRenderer 不会把它们渲染成可点 checkbox，两边数量虽然对得上（或不上）
     //   但语义错位：勾第 N 个 checkbox 实际改的是代码块里的示例行。
-    const taskRe = /^(\s*[-*]\s+\[)( |x|X)(\]\s)/;
+    // 同时覆盖普通列表和引用块里的任务（`> - [ ]`），因为引用卡片里的
+    // checkbox 也属于当前 memo，不能只修正文第一层的任务。
+    const taskRe = /^((?:\s*>\s*)*\s*[-*+]\s+\[)( |x|X)(\]\s)/;
     const fenceRe = /^\s*(?:```|~~~)/;
     const contentLines = memo.content.split("\n");
     const taskLineNums: number[] = [];
@@ -4788,27 +4807,28 @@ export class MemoriaView extends ItemView {
     }
 
     boxes.forEach((box, i) => {
+      let syncInFlight = false;
       box.disabled = false;
       box.addClass("memoria-clickable");
-      box.addEventListener("click", (e) => {
-        void (async () => {
-          e.stopPropagation();
-          const lineNum = taskLineNums[i];
-          const lines = memo.content.split("\n");
-          const original = lines[lineNum];
-          if (!original) return;
-          const m = original.match(taskRe);
-          if (!m) return;
+      const syncTaskState = (e: Event): void => {
+        if (syncInFlight) return;
+        e.stopPropagation();
+        const lineNum = taskLineNums[i];
+        const lines = memo.content.split("\n");
+        const original = lines[lineNum];
+        if (!original) return;
+        const m = original.match(taskRe);
+        if (!m) return;
 
-          // click 事件触发时，原生 checkbox 已经切换到新状态；不要再依赖
-          // 可能已经过期的 memo.content 推断状态。
-          const checked = box.checked;
-          // 只替换这一行的 [ ] / [x]，不影响内容其他部分
-          lines[lineNum] = original.replace(
-            taskRe,
-            checked ? "$1x$3" : "$1 $3"
-          );
-          const newContent = lines.join("\n");
+        // 原生 checkbox 的状态已经在 input/change 事件前更新，直接读取最新值。
+        const checked = box.checked;
+        lines[lineNum] = original.replace(
+          taskRe,
+          checked ? "$1x$3" : "$1 $3"
+        );
+        const newContent = lines.join("\n");
+        syncInFlight = true;
+        void (async () => {
           box.disabled = true;
           try {
             await this.store.editMemo(memo, newContent);
@@ -4821,9 +4841,14 @@ export class MemoriaView extends ItemView {
             new Notice(t("notice.checkFailed", { msg: (err as Error).message }));
           } finally {
             box.disabled = false;
+            syncInFlight = false;
           }
         })();
-      });
+      };
+      // 移动端 WebView 对 checkbox 的 click 派发时机并不总是一致；
+      // input/change 都是原生状态变更事件，用同一把锁避免一次点击重复写两次。
+      box.addEventListener("input", syncTaskState);
+      box.addEventListener("change", syncTaskState);
     });
   }
 
