@@ -1939,6 +1939,14 @@
 }
 
 /* ================== 标签联想下拉框 ================== */
+.memoria-tag-caret-mirror {
+  position: fixed;
+  visibility: hidden;
+  pointer-events: none;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
 .memoria-tag-suggest {
   position: fixed;
   z-index: 10001;
@@ -1952,6 +1960,7 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
   min-width: 180px;
   font-size: 13px;
 }
@@ -1964,7 +1973,7 @@
   cursor: pointer;
   color: var(--text-normal);
   user-select: none;
-  touch-action: manipulation;
+  touch-action: pan-y;
   transition: background 0.08s;
 }
 .memoria-tag-suggest-item:hover,

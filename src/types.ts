@@ -262,6 +262,8 @@ export interface MemoriaSettings {
   savedSearches: SavedSearch[];
   /** 当前被固定的检索式；重开 Memoria 时会自动应用。 */
   pinnedSearch: PinnedSearch | null;
+  /** 自定义检索式是否统一排除置顶笔记。 */
+  excludePinnedFromSavedSearches: boolean;
   /** v1.1.9: 删除笔记时保留到 _trash.md（关掉就是硬删除） */
   useTrash: boolean;
   /** v1.2.3: 导出图片的背景主题。
@@ -336,6 +338,7 @@ export const DEFAULT_SETTINGS: MemoriaSettings = {
   sidebarSectionCollapsed: { ...DEFAULT_SIDEBAR_SECTION_COLLAPSED },
   savedSearches: [],
   pinnedSearch: null,
+  excludePinnedFromSavedSearches: false,
   useTrash: true,
   exportTheme: "auto",
   collapseLineLimit: 8,

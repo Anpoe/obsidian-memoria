@@ -287,8 +287,8 @@ const zhCN: Dict = {
   "empty.onThisDayBackToReview": " 回到往年今天",
   "meta.reroll": " 换一批",
   "meta.backToOnThisDay": " 回到往年今天",
-  "empty.todo": "没有未完成的待办",
-  "empty.todoSub": "所有 `- [ ]` 都勾上了，或者你还没写过任何待办。在笔记里写 `- [ ] 要做的事` 就能在这里看到。",
+  "empty.todo": "还没有待办",
+  "empty.todoSub": "在笔记里写 `- [ ] 要做的事` 就能在这里看到；勾选完成后仍会保留在待办视图。",
 
   // 密度切换
   "density.toggle": "切换视图密度",
@@ -343,6 +343,8 @@ const zhCN: Dict = {
   "settings.sidebarTags.desc": "默认关闭。Obsidian 右侧栏已有标签面板，重复展示意义不大。关闭后可在卡片底部点击标签胶囊筛选，或在搜索框输入「#标签名」筛选。",
   "settings.sidebarYears.name": "在侧边栏显示年份列表",
   "settings.sidebarYears.desc": "默认开启。笔记跨度长（如 8 年以上）时年份列表会很长，关闭后可隐藏，减少右侧视觉干扰。",
+  "settings.excludePinnedSearches.name": "检索式排除置顶笔记",
+  "settings.excludePinnedSearches.desc": "开启后，所有自定义检索式都会在最终结果中排除置顶笔记，即使置顶笔记满足检索条件。普通视图与“置顶”视图不受影响。",
   "settings.clearAfterSave.name": "发送后清空输入框",
   "settings.pageSize.name": "每次加载条数",
   "settings.pageSize.desc": "瀑布流每次展示多少条，滚动到底自动加载更多",
@@ -904,8 +906,8 @@ const enUS: Dict = {
   "empty.onThisDayBackToReview": " Back to on-this-day",
   "meta.reroll": " Shuffle",
   "meta.backToOnThisDay": " Back to on-this-day",
-  "empty.todo": "No open to-dos",
-  "empty.todoSub": "All `- [ ]` checked off, or you haven't written any yet. Put `- [ ] something` in a memo to see it here.",
+  "empty.todo": "No to-dos yet",
+  "empty.todoSub": "Add `- [ ] something` to a memo to see it here. Completed tasks remain in the To-do view.",
 
   // Density
   "density.toggle": "Toggle view density",
@@ -960,6 +962,8 @@ const enUS: Dict = {
   "settings.sidebarTags.desc": "Default off. Obsidian's right sidebar already has a tag panel, so this is usually redundant. Without it you can still click tag pills on cards to filter, or type \"#tag\" in the search bar.",
   "settings.sidebarYears.name": "Show year list in sidebar",
   "settings.sidebarYears.desc": "Default on. When your memos span many years (e.g. 8+), the year list gets long; turn this off to hide it and reduce visual clutter on the right.",
+  "settings.excludePinnedSearches.name": "Exclude pinned notes from searches",
+  "settings.excludePinnedSearches.desc": "When enabled, every custom search excludes pinned notes at the final result stage, even when they match its conditions. Regular views and the Pinned view are unaffected.",
   "settings.clearAfterSave.name": "Clear input after send",
   "settings.pageSize.name": "Page size",
   "settings.pageSize.desc": "How many memos to render per batch; scroll to bottom auto-loads more",

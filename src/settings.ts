@@ -71,6 +71,20 @@ export class MemoriaSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName(t("settings.excludePinnedSearches.name"))
+      .setDesc(t("settings.excludePinnedSearches.desc"))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.excludePinnedFromSavedSearches)
+          .onChange(async (value) => {
+            this.plugin.settings.excludePinnedFromSavedSearches = value;
+            await this.plugin.saveSettings();
+            // 只改变检索结果，不需要重新读取 Markdown。
+            this.plugin.store.notifyChange();
+          })
+      );
+
+    new Setting(containerEl)
       .setName(t("settings.clearAfterSave.name"))
       .addToggle((tg) =>
         tg.setValue(this.plugin.settings.clearAfterSave).onChange(async (v) => {

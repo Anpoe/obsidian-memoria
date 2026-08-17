@@ -12,6 +12,7 @@ export interface TagSuggestion {
 }
 
 export class TagSuggest {
+  private static readonly MAX_VISIBLE_SUGGESTIONS = 30;
   private dropdown: HTMLElement | null = null;
   private items: string[] = [];
   private active = 0;
@@ -185,8 +186,10 @@ export class TagSuggest {
     query: string
   ): string[] {
     if (!query) {
-      // 空查询：显示前 8 个最常用
-      return all.slice(0, 8).map((x) => x.name);
+      // 空查询显示更多常用标签，超出面板高度后可在移动端上下拖动浏览。
+      return all
+        .slice(0, TagSuggest.MAX_VISIBLE_SUGGESTIONS)
+        .map((x) => x.name);
     }
     const q = query.toLowerCase();
     const prefix: { name: string; count: number }[] = [];
@@ -202,7 +205,9 @@ export class TagSuggest {
         if (segs.some((s) => s.startsWith(q))) contain.push(t);
       }
     }
-    return [...prefix, ...contain].slice(0, 8).map((x) => x.name);
+    return [...prefix, ...contain]
+      .slice(0, TagSuggest.MAX_VISIBLE_SUGGESTIONS)
+      .map((x) => x.name);
   }
 
   // -------- UI --------
@@ -210,8 +215,6 @@ export class TagSuggest {
   private render(): void {
     if (!this.dropdown) {
       this.dropdown = activeDocument.body.createDiv({ cls: "memoria-tag-suggest" });
-      // 阻止点击下拉框时 textarea 的 blur 抢先关闭
-      this.dropdown.addEventListener("mousedown", (e) => e.preventDefault());
       this.attachViewportListeners();
     }
     this.dropdown.empty();
@@ -223,15 +226,8 @@ export class TagSuggest {
       const icon = item.createSpan({ cls: "memoria-tag-suggest-icon" });
       setIcon(icon, "hash");
       item.createSpan({ cls: "memoria-tag-suggest-name", text: name });
-      // 移动端有时不会先派发可阻止 blur 的 mousedown；触摸按下时直接应用，
-      // 避免输入法弹起后下拉框被系统键盘抢走，随后 click 才到达的竞态。
-      item.addEventListener("pointerdown", (event) => {
-        if (event.pointerType !== "touch") return;
-        event.preventDefault();
-        event.stopPropagation();
-        this.active = i;
-        this.applySelected();
-      });
+      // 只在完整的 click（轻点）后选择。不要在 touch pointerdown 时立即应用，
+      // 否则用户刚开始上下拖动列表就会误选第一项，列表也无法滚动。
       item.addEventListener("click", () => {
         this.active = i;
         this.applySelected();
@@ -319,6 +315,68 @@ export class TagSuggest {
     );
   }
 
+  /**
+   * 用一个不可见镜像计算 textarea 光标在视口里的真实位置。
+   * textarea 本身没有标准 caret rect API；镜像需要复刻字体、换行、内边距，
+   * 并抵消 textarea 的内部滚动，才能让移动端建议列表从正在输入的 #tag 处展开。
+   */
+  private getCaretRect(): DOMRect | null {
+    const doc = this.textarea.ownerDocument;
+    const style = doc.defaultView?.getComputedStyle(this.textarea);
+    if (!style) return null;
+
+    const textareaRect = this.textarea.getBoundingClientRect();
+    const mirror = doc.createElement("div");
+    mirror.className = "memoria-tag-caret-mirror";
+    const copiedProperties = [
+      "borderBottomWidth",
+      "borderLeftWidth",
+      "borderRightWidth",
+      "borderTopWidth",
+      "fontFamily",
+      "fontSize",
+      "fontStyle",
+      "fontVariant",
+      "fontWeight",
+      "letterSpacing",
+      "lineHeight",
+      "paddingBottom",
+      "paddingLeft",
+      "paddingRight",
+      "paddingTop",
+      "tabSize",
+      "textIndent",
+      "textTransform",
+      "wordBreak",
+      "wordSpacing",
+    ] as const;
+    mirror.style.width = `${textareaRect.width}px`;
+    mirror.style.left = `${textareaRect.left - this.textarea.scrollLeft}px`;
+    mirror.style.top = `${textareaRect.top - this.textarea.scrollTop}px`;
+    for (const property of copiedProperties) {
+      mirror.style[property] = style[property];
+    }
+
+    const caret = doc.createElement("span");
+    caret.textContent = "\u200b";
+    const position = this.textarea.selectionStart ?? this.textarea.value.length;
+    mirror.append(doc.createTextNode(this.textarea.value.slice(0, position)), caret);
+    doc.body.appendChild(mirror);
+    const rawRect = caret.getBoundingClientRect();
+    mirror.remove();
+
+    const lineHeight = Number.parseFloat(style.lineHeight) || rawRect.height || 20;
+    const top = Math.max(
+      textareaRect.top,
+      Math.min(rawRect.top, textareaRect.bottom - lineHeight)
+    );
+    const left = Math.max(
+      textareaRect.left,
+      Math.min(rawRect.left, textareaRect.right)
+    );
+    return new DOMRect(left, top, 1, lineHeight);
+  }
+
   /** 键盘有展开动画，连续在当前帧、80ms、240ms 三个时点重新定位。 */
   private schedulePosition(): void {
     if (!this.dropdown) return;
@@ -334,14 +392,11 @@ export class TagSuggest {
   private position(): void {
     if (!this.dropdown) return;
     const textareaRect = this.textarea.getBoundingClientRect();
-    const inputCard = this.textarea.closest<HTMLElement>(".memoria-input-card");
     const mobileLayout = this.isMobileLayout();
-    // 手机上输入卡片本身已经被 Obsidian 放到键盘上方，因此建议框直接锚定
-    // 在整张输入卡上方，比猜测不同 Android WebView 的键盘高度稳定得多。
+    // 手机上的建议列表从当前 #tag 光标处向上展开，而不是从整张编辑卡片上沿
+    // 展开；若 WebView 无法计算光标位置，再保守回退到 textarea。
     const anchorRect =
-      mobileLayout && inputCard
-        ? inputCard.getBoundingClientRect()
-        : textareaRect;
+      mobileLayout ? (this.getCaretRect() ?? textareaRect) : textareaRect;
     const viewport = window.visualViewport;
     const viewportTop = viewport?.offsetTop ?? 0;
     const viewportLeft = viewport?.offsetLeft ?? 0;
@@ -362,7 +417,7 @@ export class TagSuggest {
     const viewportRight = viewportLeft + viewportWidth;
     const margin = 8;
     const estimatedHeight = Math.min(280, Math.max(48, this.items.length * 34 + 8));
-    const spaceBelow = Math.max(0, viewportBottom - textareaRect.bottom - margin);
+    const spaceBelow = Math.max(0, viewportBottom - anchorRect.bottom - margin);
     const spaceAbove = Math.max(0, anchorRect.top - viewportTop - margin);
     const showAbove =
       mobileLayout ||
@@ -379,13 +434,19 @@ export class TagSuggest {
     );
     const preferredTop = showAbove
       ? anchorRect.top - actualHeight - 4
-      : textareaRect.bottom + 4;
+      : anchorRect.bottom + 4;
     const minTop = viewportTop + margin;
     const maxTop = Math.max(minTop, viewportBottom - actualHeight - margin);
     const top = Math.max(minTop, Math.min(preferredTop, maxTop));
     const availableWidth = Math.max(120, viewportWidth - margin * 2);
-    const width = Math.min(anchorRect.width, 280, availableWidth);
-    const preferredLeft = anchorRect.left + 4;
+    const width = Math.min(
+      mobileLayout ? 280 : anchorRect.width,
+      280,
+      availableWidth
+    );
+    const preferredLeft = mobileLayout
+      ? anchorRect.left - 12
+      : anchorRect.left + 4;
     const minLeft = viewportLeft + margin;
     const maxLeft = Math.max(minLeft, viewportRight - width - margin);
     const left = Math.max(minLeft, Math.min(preferredLeft, maxLeft));
