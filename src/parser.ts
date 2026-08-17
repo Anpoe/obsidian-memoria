@@ -137,15 +137,17 @@ export function detectImage(text: string): boolean {
 }
 
 /** v1.5.0: 扫描正文里的任务列表项。
- *   Markdown 规范允许多种缩进和列表符号（- / * / +），需要都支持。
+ *   Markdown 规范允许多种缩进和列表符号（- / * / +），需要都支持；
+ *   引用块里的 `> - [ ]` 仍然是当前 memo 的任务，也必须计入状态。
  *   `- [ ]` = 未完成，`- [x]` / `- [X]` = 已完成（有些 md 变体还支持
  *   `- [-]` 表示取消但我们不识别，保持最小集合）。
  *   返回 { open, closed } 分别表示"至少有一个未完成/已完成"的布尔。
  *   一次扫描同时算出两个，比 parser 里再单独跑一遍正则省一次遍历。 */
 export function detectTasks(text: string): { open: boolean; closed: boolean } {
-  // (?:^|\n) 锚定行首，允许前置空白 \s*，支持 - / * / + 三种列表符号
-  const openRe = /(?:^|\n)\s*[-*+]\s+\[ \]\s/;
-  const closedRe = /(?:^|\n)\s*[-*+]\s+\[[xX]\]\s/;
+  // (?:^|\n) 锚定行首，允许任意层引用前缀、前置空白，支持
+  // - / * / + 三种列表符号。
+  const openRe = /(?:^|\n)(?:\s*>\s*)*\s*[-*+]\s+\[ \]\s/;
+  const closedRe = /(?:^|\n)(?:\s*>\s*)*\s*[-*+]\s+\[[xX]\]\s/;
   return {
     open: openRe.test(text),
     closed: closedRe.test(text),

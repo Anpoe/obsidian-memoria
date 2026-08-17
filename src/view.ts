@@ -29,6 +29,7 @@ import {
   VIEW_TYPE_MEMORIA_YEAR,
 } from "./types";
 import { MemoStore } from "./store";
+import { detectTasks } from "./parser";
 import { TagSuggest, TagSuggestion } from "./tag-suggest";
 import { extractImages, renderImageGrid, openLightbox } from "./image-grid";
 import { renderCalendar } from "./calendar";
@@ -205,6 +206,9 @@ export class MemoriaView extends ItemView {
    *         行为与 innerHTML 一致） */
   private mdCache = new Map<string, DocumentFragment>();
   private static MD_CACHE_MAX = 500;
+  /** 待办原地写回期间跳过 store 触发的整页重渲染，避免移动端闪屏。 */
+  private inlineTaskWrites = 0;
+  private suppressStoreRenderUntil = 0;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -242,7 +246,15 @@ export class MemoriaView extends ItemView {
     this.buildLayout();
     this.applyPinnedSearch();
     this.syncMobileHeader();
-    this.unsubscribe = this.store.onChange(() => this.renderAll());
+    this.unsubscribe = this.store.onChange(() => {
+      if (
+        this.inlineTaskWrites > 0 ||
+        Date.now() < this.suppressStoreRenderUntil
+      ) {
+        return;
+      }
+      this.renderAll();
+    });
 
     // v2.0.14: Obsidian 内置命令「在新标签页中打开光标处链接」默认占用 Ctrl+Enter。
     //   v2.0.17: 发送快捷键改为 sendHotkey 可配置，两种模式互斥：
@@ -1892,16 +1904,21 @@ export class MemoriaView extends ItemView {
 
   /** 标签联想只展示当前 Memoria 数据集中的标签，不读取 Vault 全局标签。 */
   private getMemoriaTagSuggestions(): TagSuggestion[] {
+    return [...this.getMemoriaTagCounts(this.store.getAll()).entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }
+
+  /** 侧栏与输入联想共用同一份 Memoria 标签索引，避免任何全局标签来源混入。 */
+  private getMemoriaTagCounts(memos: Memo[]): Map<string, number> {
     const counts = new Map<string, number>();
-    for (const memo of this.store.getAll()) {
+    for (const memo of memos) {
       for (const tag of memo.tags) {
         if (RESERVED_TAGS.has(tag)) continue;
         counts.set(tag, (counts.get(tag) ?? 0) + 1);
       }
     }
-    return [...counts.entries()]
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    return counts;
   }
 
   /** 编辑草稿按 vault + 文件 + 原始位置隔离，避免不同笔记互相覆盖。 */
@@ -2436,13 +2453,7 @@ export class MemoriaView extends ItemView {
       yearCount.set(y, (yearCount.get(y) ?? 0) + 1);
     }
 
-    const tagCount = new Map<string, number>();
-    for (const m of memos) {
-      for (const tag of m.tags) {
-        if (RESERVED_TAGS.has(tag)) continue;
-        tagCount.set(tag, (tagCount.get(tag) ?? 0) + 1);
-      }
-    }
+    const tagCount = this.getMemoriaTagCounts(memos);
 
     const presets: Array<{
       key: Filter["preset"];
@@ -4827,19 +4838,42 @@ export class MemoriaView extends ItemView {
           checked ? "$1x$3" : "$1 $3"
         );
         const newContent = lines.join("\n");
+        const card = body.closest<HTMLElement>(".memoria-card");
         syncInFlight = true;
+        // store.editMemo() 会触发文件 modify/change 事件。任务勾选只需要原地
+        // 更新当前 checkbox，不应为此销毁并重建整个时间线；移动端整页重绘会
+        // 表现成明显闪屏。用计数器覆盖并发写回，并在尾部留一小段事件缓冲期。
+        this.inlineTaskWrites += 1;
         void (async () => {
           box.disabled = true;
           try {
             await this.store.editMemo(memo, newContent);
             // 先更新当前对象，避免文件 reload 完成前进入编辑时仍读到旧状态。
             memo.content = newContent;
+            const taskState = detectTasks(newContent);
+            memo.hasOpenTask = taskState.open;
+            memo.hasClosedTask = taskState.closed;
+
+            // 侧栏计数可以单独刷新，不触碰时间线 DOM。若当前就在“待办”筛选
+            // 且最后一个未完成任务刚被勾掉，仅移除这一张卡片。
+            this.renderSidebar();
+            if (this.filter.preset === "todo" && !memo.hasOpenTask) {
+              card?.remove();
+              const metaLeft = this.listEl.querySelector<HTMLElement>(
+                ".memoria-list-meta-left"
+              );
+              if (metaLeft) {
+                metaLeft.setText(this.describeFilter(this.getFilteredMemos().length));
+              }
+            }
           } catch (err) {
             // 写回失败时恢复视觉状态，避免界面与原文产生假同步。
             box.checked = !checked;
             console.error("[Memoria] 任务勾选失败:", err);
             new Notice(t("notice.checkFailed", { msg: (err as Error).message }));
           } finally {
+            this.inlineTaskWrites = Math.max(0, this.inlineTaskWrites - 1);
+            this.suppressStoreRenderUntil = Date.now() + 1000;
             box.disabled = false;
             syncInFlight = false;
           }

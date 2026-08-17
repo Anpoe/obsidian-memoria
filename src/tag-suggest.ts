@@ -3,7 +3,7 @@
 // 数据来源：当前 Memoria 数据集中的标签。
 // 不读取 metadataCache，避免把 Vault 里其他文件的全局标签带进来。
 
-import { setIcon } from "obsidian";
+import { Platform, setIcon } from "obsidian";
 import { replaceTextareaRange } from "./textarea-utils";
 
 export interface TagSuggestion {
@@ -19,6 +19,9 @@ export class TagSuggest {
 
   private blurTimer: number | null = null;
   private viewport: VisualViewport | null = null;
+  private repositionTimers: number[] = [];
+  private windowListenersAttached = false;
+  private documentListenerAttached = false;
 
   constructor(
     private textarea: HTMLTextAreaElement,
@@ -65,20 +68,30 @@ export class TagSuggest {
 
   private handleBlur = (): void => {
     this.clearBlurTimer();
-    // 延迟给下拉项的 mousedown/click 一个机会触发选择。
-    // 如果 textarea 很快重新获得焦点，handleFocus 会把这个定时器取消掉。
+    // Android WebView 在输入法候选、键盘尺寸变化和工具栏点击过程中会把
+    // activeElement 短暂切到 body。这里若按 blur 关闭，建议框就会“闪一下”后
+    // 消失。移动端改由 document pointerdown 判断真正的外部点击来关闭。
+    if (this.isMobileLayout()) {
+      this.schedulePosition();
+      return;
+    }
+    // Android 输入法弹出、工具栏按钮回焦时都可能产生短暂 blur。
+    // 延迟后再确认焦点确实离开输入区，避免建议框“闪一下就消失”。
     this.blurTimer = window.setTimeout(() => {
       this.blurTimer = null;
+      if (activeDocument.activeElement === this.textarea) return;
       this.close();
-    }, 220);
+    }, 360);
   };
 
   private handleFocus = (): void => {
     this.clearBlurTimer();
+    if (this.dropdown) this.schedulePosition();
   };
 
   private handleScroll = (): void => {
-    this.close();
+    // 键盘弹起和 textarea 自动滚动都会触发 scroll；这里只重定位，不能关闭。
+    this.schedulePosition();
   };
 
   private clearBlurTimer(): void {
@@ -86,7 +99,12 @@ export class TagSuggest {
       window.clearTimeout(this.blurTimer);
       this.blurTimer = null;
     }
-  };
+  }
+
+  private clearRepositionTimers(): void {
+    for (const timer of this.repositionTimers) window.clearTimeout(timer);
+    this.repositionTimers = [];
+  }
 
   private handleKeydown = (e: KeyboardEvent): void => {
     if (!this.dropdown) return;
@@ -219,7 +237,7 @@ export class TagSuggest {
         this.applySelected();
       });
     });
-    this.position();
+    this.schedulePosition();
   }
 
   private refreshActive(): void {
@@ -237,39 +255,118 @@ export class TagSuggest {
 
   private attachViewportListeners(): void {
     const viewport = window.visualViewport;
-    if (!viewport || this.viewport === viewport) return;
-    this.viewport = viewport;
-    viewport.addEventListener("resize", this.handleViewportChange);
-    viewport.addEventListener("scroll", this.handleViewportChange);
+    if (viewport && this.viewport !== viewport) {
+      this.viewport = viewport;
+      viewport.addEventListener("resize", this.handleViewportChange);
+      viewport.addEventListener("scroll", this.handleViewportChange);
+    }
+    if (!this.windowListenersAttached) {
+      this.windowListenersAttached = true;
+      window.addEventListener("resize", this.handleViewportChange);
+      window.addEventListener("orientationchange", this.handleViewportChange);
+    }
+    if (!this.documentListenerAttached) {
+      this.documentListenerAttached = true;
+      activeDocument.addEventListener(
+        "pointerdown",
+        this.handleDocumentPointerDown,
+        true
+      );
+    }
   }
 
   private detachViewportListeners(): void {
-    if (!this.viewport) return;
-    this.viewport.removeEventListener("resize", this.handleViewportChange);
-    this.viewport.removeEventListener("scroll", this.handleViewportChange);
-    this.viewport = null;
+    if (this.viewport) {
+      this.viewport.removeEventListener("resize", this.handleViewportChange);
+      this.viewport.removeEventListener("scroll", this.handleViewportChange);
+      this.viewport = null;
+    }
+    if (this.windowListenersAttached) {
+      window.removeEventListener("resize", this.handleViewportChange);
+      window.removeEventListener("orientationchange", this.handleViewportChange);
+      this.windowListenersAttached = false;
+    }
+    if (this.documentListenerAttached) {
+      activeDocument.removeEventListener(
+        "pointerdown",
+        this.handleDocumentPointerDown,
+        true
+      );
+      this.documentListenerAttached = false;
+    }
   }
 
   private handleViewportChange = (): void => {
-    this.position();
+    this.schedulePosition();
   };
+
+  private handleDocumentPointerDown = (event: PointerEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (this.dropdown?.contains(target)) return;
+    const inputCard = this.textarea.closest<HTMLElement>(".memoria-input-card");
+    if (inputCard?.contains(target)) return;
+    this.close();
+  };
+
+  private isMobileLayout(): boolean {
+    return (
+      Platform.isMobile ||
+      activeDocument.body.hasClass("is-mobile") ||
+      window.matchMedia(
+        "(hover: none), (pointer: coarse), (max-width: 680px)"
+      ).matches
+    );
+  }
+
+  /** 键盘有展开动画，连续在当前帧、80ms、240ms 三个时点重新定位。 */
+  private schedulePosition(): void {
+    if (!this.dropdown) return;
+    this.clearRepositionTimers();
+    this.position();
+    window.requestAnimationFrame(() => this.position());
+    this.repositionTimers = [80, 240].map((delay) =>
+      window.setTimeout(() => this.position(), delay)
+    );
+  }
 
   /** 把下拉定位到 textarea 附近，并避开移动端输入法占用的可视区域 */
   private position(): void {
     if (!this.dropdown) return;
-    const rect = this.textarea.getBoundingClientRect();
+    const textareaRect = this.textarea.getBoundingClientRect();
+    const inputCard = this.textarea.closest<HTMLElement>(".memoria-input-card");
+    const mobileLayout = this.isMobileLayout();
+    // 手机上输入卡片本身已经被 Obsidian 放到键盘上方，因此建议框直接锚定
+    // 在整张输入卡上方，比猜测不同 Android WebView 的键盘高度稳定得多。
+    const anchorRect =
+      mobileLayout && inputCard
+        ? inputCard.getBoundingClientRect()
+        : textareaRect;
     const viewport = window.visualViewport;
     const viewportTop = viewport?.offsetTop ?? 0;
     const viewportLeft = viewport?.offsetLeft ?? 0;
-    const viewportWidth = viewport?.width ?? window.innerWidth;
-    const viewportHeight = viewport?.height ?? window.innerHeight;
+    const root = activeDocument.documentElement;
+    const layoutHeight = root.clientHeight || window.innerHeight;
+    const layoutWidth = root.clientWidth || window.innerWidth;
+    const viewportWidth = Math.min(
+      viewport?.width ?? layoutWidth,
+      window.innerWidth,
+      layoutWidth
+    );
+    const viewportHeight = Math.min(
+      viewport?.height ?? layoutHeight,
+      window.innerHeight,
+      layoutHeight
+    );
     const viewportBottom = viewportTop + viewportHeight;
     const viewportRight = viewportLeft + viewportWidth;
     const margin = 8;
     const estimatedHeight = Math.min(280, Math.max(48, this.items.length * 34 + 8));
-    const spaceBelow = Math.max(0, viewportBottom - rect.bottom - margin);
-    const spaceAbove = Math.max(0, rect.top - viewportTop - margin);
-    const showAbove = spaceBelow < estimatedHeight && spaceAbove > spaceBelow;
+    const spaceBelow = Math.max(0, viewportBottom - textareaRect.bottom - margin);
+    const spaceAbove = Math.max(0, anchorRect.top - viewportTop - margin);
+    const showAbove =
+      mobileLayout ||
+      (spaceBelow < estimatedHeight && spaceAbove > spaceBelow);
     const maxHeight = Math.max(
       48,
       Math.min(280, showAbove ? spaceAbove : Math.max(spaceBelow, 48))
@@ -281,20 +378,21 @@ export class TagSuggest {
       maxHeight
     );
     const preferredTop = showAbove
-      ? rect.top - actualHeight - 4
-      : rect.bottom + 4;
+      ? anchorRect.top - actualHeight - 4
+      : textareaRect.bottom + 4;
     const minTop = viewportTop + margin;
     const maxTop = Math.max(minTop, viewportBottom - actualHeight - margin);
     const top = Math.max(minTop, Math.min(preferredTop, maxTop));
-    const width = Math.min(rect.width, 280, Math.max(160, viewportWidth - margin * 2));
-    const preferredLeft = rect.left + 4;
+    const availableWidth = Math.max(120, viewportWidth - margin * 2);
+    const width = Math.min(anchorRect.width, 280, availableWidth);
+    const preferredLeft = anchorRect.left + 4;
     const minLeft = viewportLeft + margin;
     const maxLeft = Math.max(minLeft, viewportRight - width - margin);
     const left = Math.max(minLeft, Math.min(preferredLeft, maxLeft));
     this.dropdown.style.top = `${top}px`;
     this.dropdown.style.left = `${left}px`;
     this.dropdown.style.minWidth = `${width}px`;
-    this.dropdown.style.maxWidth = `${Math.max(160, viewportWidth - margin * 2)}px`;
+    this.dropdown.style.maxWidth = `${availableWidth}px`;
   }
 
   private applySelected(): void {
@@ -311,6 +409,7 @@ export class TagSuggest {
 
   private close(): void {
     this.clearBlurTimer();
+    this.clearRepositionTimers();
     this.detachViewportListeners();
     if (this.dropdown) {
       this.dropdown.remove();
