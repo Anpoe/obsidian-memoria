@@ -262,7 +262,7 @@ export interface MemoriaSettings {
   savedSearches: SavedSearch[];
   /** 当前被固定的检索式；重开 Memoria 时会自动应用。 */
   pinnedSearch: PinnedSearch | null;
-  /** 自定义检索式是否统一排除置顶笔记。 */
+  /** 自定义检索式是否让置顶笔记豁免筛选条件。 */
   excludePinnedFromSavedSearches: boolean;
   /** v1.1.9: 删除笔记时保留到 _trash.md（关掉就是硬删除） */
   useTrash: boolean;

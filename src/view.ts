@@ -2420,7 +2420,7 @@ export class MemoriaView extends ItemView {
     //   避免在循环里每条 memo 都 new Date。
     let todayCount = 0;
     let weekCount = 0;
-    // 待办视图统计所有含任务的 memo；完成状态只影响复选框，不会把卡片移出待办。
+    // 待办视图只统计仍有未完成任务的 memo；全部勾选后应从待办视图消失。
     let todoCount = 0;
     const weekMondayTs = (() => {
       const now = new Date();
@@ -2437,7 +2437,7 @@ export class MemoriaView extends ItemView {
       if (m.hasLink) linkCount++;
       if (m.isPinned) pinnedCount++;
       if (m.isStarred) starredCount++;
-      if (m.hasOpenTask || m.hasClosedTask) todoCount++;
+      if (m.hasOpenTask) todoCount++;
       if (m.date === todayStrForSidebar) todayCount++;
       if (m.datetime.getTime() >= weekMondayTs) weekCount++;
       if (m.date.slice(5) === todayMMDD && m.date !== todayStrForSidebar)
@@ -2468,7 +2468,7 @@ export class MemoriaView extends ItemView {
       //   视觉节奏统一；也能一眼看到今天 / 本周的活跃度
       { key: "today", icon: "calendar", text: t("sidebar.today"), count: todayCount },
       { key: "week", icon: "calendar-days", text: t("sidebar.week"), count: weekCount },
-      // 待办视图 —— 只要 memo 含任务就保留，勾选状态不改变归类。
+      // 待办视图 —— 只显示仍有未完成任务的 memo。
       { key: "todo", icon: "check-square", text: t("sidebar.todo"), count: todoCount },
       // v1.1.19: 合并每日回顾 + 随机回顾 → 统一"回顾"入口
       //   默认先看"往年的今天"，没有时 empty 状态里再引导去"随机 5 条"
@@ -2773,7 +2773,9 @@ export class MemoriaView extends ItemView {
 
   private matchesSavedSearch(memo: Memo, saved: SavedSearch): boolean {
     if (this.settings.excludePinnedFromSavedSearches && memo.isPinned) {
-      return false;
+      // 置顶笔记从自定义检索式的条件中豁免：开启设置后，无论检索式
+      // 是什么、置顶笔记是否满足条件，都要把它保留在结果和计数里。
+      return true;
     }
     const query = parseSearchQuery(saved.query);
     if (!matchesQuery(memo.content, memo.tags, memo.date, query)) return false;
@@ -2814,9 +2816,10 @@ export class MemoriaView extends ItemView {
           matched =
             (filter.value === "pinned" && memo.isPinned) ||
             (filter.value === "starred" && memo.isStarred) ||
-            (filter.value === "todo" &&
-              (memo.hasOpenTask || memo.hasClosedTask)) ||
-            (filter.value === "done" && memo.hasClosedTask);
+            (filter.value === "todo" && memo.hasOpenTask) ||
+            (filter.value === "done" &&
+              memo.hasClosedTask &&
+              !memo.hasOpenTask);
           break;
         case "source":
           matched = memo.file === filter.value;
@@ -2844,12 +2847,17 @@ export class MemoriaView extends ItemView {
   private isSearchItemActive(item: SidebarSearchItem): boolean {
     if (this.filter.tag || this.filter.year || this.filter.date) return false;
     if (item.type === "preset") {
-      return this.filter.preset === item.value && !this.filter.keyword;
+      // 自定义检索式内部也使用 preset=all 作为基础视图；此时不能把
+      // “全部笔记”和当前检索式同时标成 active。
+      return (
+        this.filter.preset === item.value &&
+        !this.filter.keyword &&
+        !this.activeSavedSearchId
+      );
     }
-    if (item.savedId && this.activeSavedSearchId) {
-      return item.savedId === this.activeSavedSearchId;
-    }
-    return this.filter.preset === "all" && this.filter.keyword.trim() === item.value;
+    // 自定义检索式必须通过 savedId 精确匹配。不能再用空 keyword 推断 active，
+    // 否则点击“全部笔记”后，query 为空的检索式会被错误地再次高亮。
+    return Boolean(item.savedId && item.savedId === this.activeSavedSearchId);
   }
 
   private isSearchItemPinned(item: SidebarSearchItem): boolean {
@@ -3490,7 +3498,12 @@ export class MemoriaView extends ItemView {
     count?: number
   ): void {
     const isActive =
-      this.filter.preset === key && !this.filter.tag && !this.filter.year;
+      this.filter.preset === key &&
+      !this.filter.tag &&
+      !this.filter.year &&
+      // 自定义检索式以 preset=all 为底层筛选状态；不能因此把
+      // “全部笔记”和自定义检索式同时高亮。
+      !this.activeSavedSearchId;
     const el = parent.createDiv({
       cls: "memoria-nav-item" + (isActive ? " active" : ""),
     });
@@ -4038,7 +4051,7 @@ export class MemoriaView extends ItemView {
     else if (rf.type === "pinned") result = result.filter((m) => m.isPinned);
     else if (rf.type === "with-image") result = result.filter((m) => m.hasImage);
     else if (rf.type === "todo") {
-      result = result.filter((m) => m.hasOpenTask || m.hasClosedTask);
+      result = result.filter((m) => m.hasOpenTask);
     }
 
     const keyword = rf.keyword.trim().toLocaleLowerCase();
@@ -4220,14 +4233,14 @@ export class MemoriaView extends ItemView {
         return false;
       if (this.filter.date && memo.date !== this.filter.date) return false;
 
-      // 自定义检索式的置顶排除是最终兜底条件：无论文字、标签、状态等
-      // 具体条件是否命中，只要开关开启且当前笔记置顶，就不进入结果。
+      // 自定义检索式的置顶豁免是最终兜底条件：无论文字、标签、状态等
+      // 具体条件是否命中，只要开关开启且当前笔记置顶，就保留在结果中。
       if (
         this.activeSavedSearchId &&
         this.settings.excludePinnedFromSavedSearches &&
         memo.isPinned
       ) {
-        return false;
+        return true;
       }
 
       // 侧栏"标签树"点击的 tag（单个）作为 AND 附加条件合并到 query
@@ -4286,7 +4299,7 @@ export class MemoriaView extends ItemView {
     } else if (this.filter.preset === "starred") {
       result = result.filter((m) => m.isStarred);
     } else if (this.filter.preset === "todo") {
-      result = result.filter((m) => m.hasOpenTask || m.hasClosedTask);
+      result = result.filter((m) => m.hasOpenTask);
     }
     return result;
   }
@@ -4368,7 +4381,7 @@ export class MemoriaView extends ItemView {
         });
         return;
       }
-      // “待办”包含已完成任务；只有完全没有任务卡片时才显示 empty state。
+      // “待办”只包含未完成任务；全部勾选后显示空状态。
       if (this.filter.preset === "todo") {
         empty.createDiv({ cls: "memoria-empty-emoji", text: "🎉" });
         empty.createDiv({
@@ -4870,12 +4883,11 @@ export class MemoriaView extends ItemView {
             memo.hasClosedTask = taskState.closed;
 
             // 侧栏计数可以单独刷新，不触碰时间线 DOM。完成任务不会再把卡片
-            // 移出“待办”；只有内容里彻底不存在任何任务时才需要移除。
+            // 待办完成后，如果卡片里已经没有未完成任务，就从“待办”列表移除。
             this.renderSidebar();
             if (
               this.filter.preset === "todo" &&
-              !memo.hasOpenTask &&
-              !memo.hasClosedTask
+              !memo.hasOpenTask
             ) {
               card?.remove();
               const metaLeft = this.listEl.querySelector<HTMLElement>(
