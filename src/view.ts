@@ -47,6 +47,7 @@ import {
   setTextareaValue,
   WrapHandler,
 } from "./textarea-utils";
+import { filterMemosByArchive } from "./archive";
 
 interface Filter {
   tag: string | null;
@@ -66,7 +67,8 @@ interface Filter {
     | "with-link"
     | "pinned"
     | "starred"
-    | "todo";
+    | "todo"
+    | "archived";
   randomSeed?: number;
 }
 
@@ -2401,7 +2403,17 @@ export class MemoriaView extends ItemView {
       this.overviewMode = this.settings.defaultOverviewMode || "heatmap";
     }
     this.sidebarEl.empty();
-    const memos = this.store.getAll();
+    const allMemos = this.store.getAll();
+    const memos = filterMemosByArchive(
+      allMemos,
+      this.settings.archivedMemoKeys,
+      false
+    );
+    const archivedMemos = filterMemosByArchive(
+      allMemos,
+      this.settings.archivedMemoKeys,
+      true
+    );
 
     // 统计
     const tagSet = new Set<string>();
@@ -2477,6 +2489,12 @@ export class MemoriaView extends ItemView {
         icon: "history",
         text: t("sidebar.review"),
         count: onThisDayCount,
+      },
+      {
+        key: "archived",
+        icon: "archive",
+        text: t("sidebar.archive"),
+        count: archivedMemos.length,
       },
     ];
 
@@ -2772,6 +2790,7 @@ export class MemoriaView extends ItemView {
   }
 
   private matchesSavedSearch(memo: Memo, saved: SavedSearch): boolean {
+    if (memo.isArchived) return false;
     if (this.settings.excludePinnedFromSavedSearches && memo.isPinned) {
       // 置顶笔记从自定义检索式的条件中豁免：开启设置后，无论检索式
       // 是什么、置顶笔记是否满足条件，都要把它保留在结果和计数里。
@@ -4217,7 +4236,11 @@ export class MemoriaView extends ItemView {
   }
 
   private getBaseFilteredMemos(): Memo[] {
-    const all = this.store.getAll();
+    const all = filterMemosByArchive(
+      this.store.getAll(),
+      this.settings.archivedMemoKeys,
+      this.filter.preset === "archived"
+    );
 
     // v2.0.0: 新的高级搜索语法（兼容旧的"#tag 关键词"）
     //   - 关键词 AND：`量子 工作室`
@@ -4312,7 +4335,9 @@ export class MemoriaView extends ItemView {
       result = this.applyReviewFilters(result);
       if (!result.length) return result;
       if (this.settings.enableSmartReview) {
-        const todayMemos = this.store.getAll().filter((m) => m.date === todayStr);
+        const todayMemos = this.store
+          .getAll()
+          .filter((m) => !m.isArchived && m.date === todayStr);
         return pickSmartReview(result, {
           count: Math.min(5, result.length),
           todayStr,
@@ -4565,6 +4590,7 @@ export class MemoriaView extends ItemView {
       pinned: t("list.presetPinned"),
       starred: t("list.presetStarred"),
       todo: `✅ ${t("sidebar.todo")}`,
+      archived: `🗄️ ${t("sidebar.archive")}`,
     };
     if (this.filter.preset !== "all") parts.push(presetMap[this.filter.preset]);
     if (this.filter.year) parts.push(this.filter.year);
@@ -4587,6 +4613,7 @@ export class MemoriaView extends ItemView {
         "memoria-card" +
         (memo.isPinned ? " is-pinned" : "") +
         (memo.isStarred ? " is-starred" : "") +
+        (memo.isArchived ? " is-archived" : "") +
         (this.inputMode === "edit" && this.editingMemo === memo
           ? " is-editing"
           : "") +
@@ -5554,6 +5581,27 @@ export class MemoriaView extends ItemView {
           new Notice(
             memo.isStarred ? t("notice.unstarred") : t("notice.starred")
           );
+        })
+    );
+    menu.addItem((item) =>
+      item
+        .setTitle(memo.isArchived ? t("card.unarchive") : t("card.archive"))
+        .setIcon(memo.isArchived ? "archive-restore" : "archive")
+        .onClick(async () => {
+          const archived = !memo.isArchived;
+          try {
+            await this.store.setArchived(memo, archived);
+            new Notice(
+              archived ? t("notice.archived") : t("notice.unarchived")
+            );
+          } catch (error) {
+            console.error("[Memoria] 保存归档状态失败:", error);
+            new Notice(
+              t("notice.archiveFailed", {
+                msg: error instanceof Error ? error.message : String(error),
+              })
+            );
+          }
         })
     );
     menu.addSeparator();

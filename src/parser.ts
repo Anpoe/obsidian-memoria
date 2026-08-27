@@ -99,6 +99,7 @@ export function parseFile(filePath: string, raw: string): Memo[] {
         hasLink,
         isPinned,
         isStarred,
+        isArchived: false,
         hasOpenTask: tasks.open,
         hasClosedTask: tasks.closed,
         range: [startLine, endLine],

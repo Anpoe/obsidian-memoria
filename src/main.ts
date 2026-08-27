@@ -26,6 +26,7 @@ import { MemoriaSettingTab } from "./settings";
 import { StatsView } from "./stats";
 import { YearPanoramaView } from "./year-panorama";
 import { initLocale, t } from "./i18n";
+import { normalizeArchivedMemoKeys } from "./archive";
 
 export default class MemoriaPlugin extends Plugin {
   settings!: MemoriaSettings;
@@ -37,7 +38,7 @@ export default class MemoriaPlugin extends Plugin {
     // v2.0.0: 初始化多语言（根据 settings.language）
     initLocale(this.settings.language);
 
-    this.store = new MemoStore(this.app, this.settings);
+    this.store = new MemoStore(this.app, this.settings, () => this.saveSettings());
 
     // 注册视图
     this.registerView(
@@ -172,6 +173,9 @@ export default class MemoriaPlugin extends Plugin {
     );
     this.settings.pinnedSearch = normalizePinnedSearch(
       this.settings.pinnedSearch
+    );
+    this.settings.archivedMemoKeys = normalizeArchivedMemoKeys(
+      this.settings.archivedMemoKeys
     );
   }
 

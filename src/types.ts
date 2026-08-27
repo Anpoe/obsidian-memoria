@@ -231,6 +231,8 @@ export interface Memo {
   isPinned: boolean;
   /** 是否收藏（含 #收藏 标签） */
   isStarred: boolean;
+  /** 是否已归档（只保存在插件 data.json，不写入 Markdown） */
+  isArchived: boolean;
   /** v1.5.0: 是否含至少一个未完成任务 `- [ ]`（用于「待办」视图筛选） */
   hasOpenTask: boolean;
   /** v1.5.0: 是否含至少一个已完成任务 `- [x]`（保留字段，未来做"已完成待办"视图用） */
@@ -260,6 +262,8 @@ export interface MemoriaSettings {
   sidebarSectionCollapsed: Record<SidebarSectionId, boolean>;
   /** 用户创建的自定义检索式。 */
   savedSearches: SavedSearch[];
+  /** 已归档 memo 的稳定标识列表（只保存在插件 data.json）。 */
+  archivedMemoKeys: string[];
   /** 当前被固定的检索式；重开 Memoria 时会自动应用。 */
   pinnedSearch: PinnedSearch | null;
   /** 自定义检索式是否让置顶笔记豁免筛选条件。 */
@@ -337,6 +341,7 @@ export const DEFAULT_SETTINGS: MemoriaSettings = {
   sidebarSectionOrder: [...DEFAULT_SIDEBAR_SECTION_ORDER],
   sidebarSectionCollapsed: { ...DEFAULT_SIDEBAR_SECTION_COLLAPSED },
   savedSearches: [],
+  archivedMemoKeys: [],
   pinnedSearch: null,
   excludePinnedFromSavedSearches: false,
   useTrash: true,

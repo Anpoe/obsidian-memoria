@@ -12,6 +12,14 @@ import {
   fmtWeekday,
 } from "./parser";
 import { t } from "./i18n";
+import {
+  isMemoArchived,
+  normalizeArchivedMemoKeys,
+  setMemoArchived,
+  transferArchivedMemoKey,
+} from "./archive";
+
+type MemoArchiveIdentity = Pick<Memo, "file" | "date" | "time" | "content">;
 
 export class MemoStore {
   private memos: Memo[] = [];
@@ -24,7 +32,15 @@ export class MemoStore {
    *    任何时刻同一文件最多有 2 次待办（正在跑 + 最多 1 次待跑）。 */
   private reloadLocks = new Map<string, { running: boolean; pending: boolean }>();
 
-  constructor(private app: App, private settings: MemoriaSettings) {}
+  constructor(
+    private app: App,
+    private settings: MemoriaSettings,
+    private persistSettings?: () => Promise<void>
+  ) {
+    this.settings.archivedMemoKeys = normalizeArchivedMemoKeys(
+      this.settings.archivedMemoKeys
+    );
+  }
 
   /** 订阅数据变更 */
   onChange(cb: () => void): () => void {
@@ -64,6 +80,7 @@ export class MemoStore {
       );
       const result: Memo[] = [];
       for (const arr of parsed) result.push(...arr);
+      this.applyArchiveState(result);
       this.sortMemos(result);
       this.memos = result;
       this.emit();
@@ -99,6 +116,7 @@ export class MemoStore {
         if (!(current instanceof TFile)) break;
         const raw = await this.app.vault.read(current);
         const fresh = parseFile(current.path, raw);
+        this.applyArchiveState(fresh);
         this.memos = this.memos.filter((m) => m.file !== current.path);
         this.memos.push(...fresh);
         this.sortMemos(this.memos);
@@ -114,6 +132,63 @@ export class MemoStore {
     const before = this.memos.length;
     this.memos = this.memos.filter((m) => m.file !== path);
     if (this.memos.length !== before) this.emit();
+  }
+
+  /** 切换 memo 的归档状态；状态保存在插件 data.json，不修改 Markdown。 */
+  async setArchived(memo: Memo, archived: boolean): Promise<void> {
+    const current = isMemoArchived(memo, this.settings.archivedMemoKeys);
+    if (current === archived) {
+      memo.isArchived = archived;
+      return;
+    }
+
+    const previousKeys = this.settings.archivedMemoKeys;
+    this.settings.archivedMemoKeys = setMemoArchived(
+      previousKeys,
+      memo,
+      archived
+    );
+    memo.isArchived = archived;
+    try {
+      if (this.persistSettings) await this.persistSettings();
+    } catch (error) {
+      this.settings.archivedMemoKeys = previousKeys;
+      memo.isArchived = current;
+      throw error;
+    }
+    this.emit();
+  }
+
+  private applyArchiveState(memos: Memo[]): void {
+    const keys = normalizeArchivedMemoKeys(this.settings.archivedMemoKeys);
+    this.settings.archivedMemoKeys = keys;
+    for (const memo of memos) {
+      memo.isArchived = isMemoArchived(memo, keys);
+    }
+  }
+
+  private async transferArchiveState(
+    memo: MemoArchiveIdentity,
+    updatedMemo: MemoArchiveIdentity
+  ): Promise<void> {
+    if (!isMemoArchived(memo, this.settings.archivedMemoKeys)) return;
+    this.settings.archivedMemoKeys = transferArchivedMemoKey(
+      this.settings.archivedMemoKeys,
+      memo,
+      updatedMemo
+    );
+    await this.persistArchiveSettings();
+  }
+
+  private async persistArchiveSettings(): Promise<void> {
+    if (!this.persistSettings) return;
+    try {
+      await this.persistSettings();
+    } catch (error) {
+      // Markdown edits already succeeded; keep the edit intact and report the
+      // persistence problem for the next reload/debug session.
+      console.error("[Memoria] 保存归档状态失败:", error);
+    }
   }
 
   /**
@@ -193,6 +268,7 @@ export class MemoStore {
   async editMemo(memo: Memo, newContent: string): Promise<void> {
     newContent = newContent.trim();
     if (!newContent) return;
+    const wasArchived = isMemoArchived(memo, this.settings.archivedMemoKeys);
     const file = this.app.vault.getAbstractFileByPath(memo.file) as TFile | null;
     if (!file) return;
     const raw = await this.app.vault.read(file);
@@ -237,6 +313,9 @@ export class MemoStore {
     const rendered = renderMemo(memo.time, newContent).split("\n");
     lines.splice(s, e - s + 1, ...rendered);
     await this.app.vault.modify(file, lines.join("\n"));
+    if (wasArchived) {
+      await this.transferArchiveState(memo, { ...memo, content: newContent });
+    }
     await this.reloadFile(file);
   }
 
@@ -269,6 +348,7 @@ export class MemoStore {
     if (!content) {
       throw new Error(t("error.emptyContent"));
     }
+    const wasArchived = isMemoArchived(memo, this.settings.archivedMemoKeys);
 
     // ---- 计算目标参数 ----
     const newYear = newDateTime.getFullYear().toString();
@@ -343,6 +423,12 @@ export class MemoStore {
 
     // 如果是同一年（最常见情况），目标文件就是刚刚 modify 完的那个
     const sameFile = newFilePath === file.path;
+    const updatedMemo: MemoArchiveIdentity = {
+      file: newFilePath,
+      date: newDate,
+      time: newTime,
+      content,
+    };
 
     if (sameFile) {
       // 重新读一次（因为 Step 1 已经修改了），然后在新日期/时间位置插入
@@ -356,6 +442,7 @@ export class MemoStore {
         content
       );
       await this.app.vault.modify(file, next);
+      if (wasArchived) await this.transferArchiveState(memo, updatedMemo);
       await this.reloadFile(file);
     } else {
       // 跨年：目标文件可能不存在，需要复用 addMemo 的"创建文件 or 插入"逻辑
@@ -380,6 +467,7 @@ export class MemoStore {
         await this.app.vault.modify(target, next);
       }
       // 两个文件都要 reload（旧文件减少了一条，新文件多了一条）
+      if (wasArchived) await this.transferArchiveState(memo, updatedMemo);
       await this.reloadFile(file);
       const newFile = this.app.vault.getAbstractFileByPath(newFilePath) as
         | TFile
@@ -398,6 +486,7 @@ export class MemoStore {
   async deleteMemo(memo: Memo): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(memo.file) as TFile | null;
     if (!file) return;
+    const wasArchived = isMemoArchived(memo, this.settings.archivedMemoKeys);
 
     // v1.1.9: 先备份到回收站（失败不阻塞删除，只打 console）
     if (this.settings.useTrash) {
@@ -430,6 +519,14 @@ export class MemoStore {
       }
     }
     await this.app.vault.modify(file, cleaned.join("\n"));
+    if (wasArchived) {
+      this.settings.archivedMemoKeys = setMemoArchived(
+        this.settings.archivedMemoKeys,
+        memo,
+        false
+      );
+      await this.persistArchiveSettings();
+    }
     await this.reloadFile(file);
   }
 
